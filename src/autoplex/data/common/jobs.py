@@ -8,6 +8,7 @@ import traceback
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,7 +16,7 @@ from ase.constraints import voigt_6_to_full_3x3_stress
 from ase.io import read, write
 from atomate2.utils.path import strip_hostname
 from emmet.core.math import Matrix3D
-from jobflow.core.job import job
+from jobflow import Maker, job, Response
 from phonopy.structure.cells import get_supercell
 from pymatgen.core.structure import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
@@ -793,3 +794,280 @@ def preprocess_data(
         write("train.extxyz", atom_with_sigma, format="extxyz")
 
     return Path.cwd()
+
+
+@dataclass
+class MLIPStaticLabelling(Maker):
+    """
+    Maker to set up and run MLIP static calculations for input structures, including bulk, isolated atoms, and dimers.
+
+    Parameters
+    ----------
+    name: str
+        Name of the flow.
+    isolated_atom: bool
+        If true, perform single-point calculations for isolated atoms. Default is False.
+    isolated_species: list[str]
+        List of species for which to perform isolated atom calculations. If None,
+        species will be automatically derived from the 'structures' list. Default is None.
+    isolatedatom_box: list[float]
+        List of the lattice constants for a isolated_atom configuration.
+    dimer: bool
+        If true, perform single-point calculations for dimers. Default is False.
+    dimer_box: list[float]
+        The lattice constants of a dimer box.
+    dimer_species: list[str]
+        List of species for which to perform dimer calculations. If None, species
+        will be derived from the 'structures' list. Default is None.
+    dimer_range: list[float]
+        Range of distances for dimer calculations.
+    dimer_num: int
+        Number of different distances to consider for dimer calculations.
+    mlip_type: str
+        Type of MLIP calculator to use. Currently available: 'MACE'. Default is None.
+    mlip_path: str
+        Path to the MLIP-model that will be loaded as ase calculator object.        
+    mlip_kwargs: dict
+        Dictionary of custom parameters for mlip ase calculator.
+
+    Returns
+    -------
+    dict
+        A dictionary containing:
+        - 'dirs_of_output': List of directories containing output mlip data.
+        - 'config_type': List of configuration types corresponding to each directory.
+    """
+
+    name: str = "do_mlip_labelling"
+    isolated_atom: bool = False
+    isolated_species: list[str] | None = None
+    isolatedatom_box: list[float] = field(default_factory=lambda: [20, 20, 20])
+    dimer: bool = False
+    dimer_box: list[float] = field(default_factory=lambda: [20, 20, 20])
+    dimer_species: list[str] | None = None
+    dimer_range: list[float] | None = None
+    dimer_num: int = 21
+    mlip_type: str | None = None
+    mlip_path: str | None = None
+    mlip_kwargs: dict | None = None
+
+    @job
+    def make(
+        self,
+        structures: list[Structure], 
+        config_type: str | None = None,
+        ):
+        """
+        Maker to set up and run MLIP static batch calculations.
+
+        Parameters
+        ----------
+        structures : list[Structure] | list[list[Structure]]
+            List of structures for which to run the VASP static calculations. If None,
+            no bulk calculations will be performed. Default is None.
+        config_type : str
+            Configuration types corresponding to the structures. If None, defaults
+            to 'bulk'. Default is None.
+        """
+        # if isinstance(structures[0], list):
+        #     structures = flatten(structures, recursive=False)
+
+        # Define output object
+        dirs: dict[str, list[str]] = {"dirs_of_output": [], "config_type": []}    
+
+        # Load MLIP calculator
+        if self.mlip_type == 'MACE':
+            from mace.calculators import MACECalculator
+            calc = MACECalculator(model_paths=self.mlip_path, **self.mlip_kwargs)
+        else:
+            raise ValueError(f"Unknown forcefield type: {self.mlip_type}")
+
+        # Load ASE atoms objects
+        frames = []
+        for structure in structures:
+            frames += read(structure, index=":")
+
+        #Define output directory
+        output_batch_dir = os.path.join(os.getcwd(), "batch_results")       
+        os.makedirs(output_batch_dir, exist_ok=True) 
+        
+        #Perform batch static calculations
+        for idx, frame in enumerate(frames):
+            # Set calculator
+            frame.calc = calc
+            # Get energy, forces and stress updating atoms object
+            frame.get_potential_energy()    
+            
+            #Set output file
+            output_file = os.path.join(output_batch_dir, f"result_{idx}.xyz")
+            # Write results to file
+            write(output_file, frame)
+
+            # Append output file to output dirs
+            dirs["dirs_of_output"].append(output_file)
+            if config_type:
+                dirs["config_type"].append(config_type)
+            else:
+                dirs["config_type"].append("bulk")
+
+        if self.isolated_atom: #Isolated atoms with MLIP can be problematic...
+            pass
+
+        if self.dimer:
+            #Define output directory
+            output_dimer_dir = os.path.join(os.getcwd(), "dimer_results")   
+
+            try:
+                atoms = [at for at in frames]
+                if self.dimer_species is not None:
+                    dimer_syms = self.dimer_species
+                elif (self.dimer_species is None) and (structures is not None):
+                    # Get the species from the database
+                    dimer_syms = ElementCollection(atoms).get_species()
+                pairs_list = ElementCollection(atoms).find_element_pairs(dimer_syms)
+                for pair in pairs_list:
+                    for dimer_i in range(self.dimer_num):
+                        if self.dimer_range is not None:
+                            dimer_distance = self.dimer_range[0] + (
+                                self.dimer_range[1] - self.dimer_range[0]
+                            ) * float(dimer_i) / float(
+                                self.dimer_num - 1 + 0.000000000001
+                            )
+
+                        #Build dimer structure as ase atoms
+                        dimer_atoms = Atoms(
+                            symbols=[pair[0], pair[1]],
+                            positions=[[0.0, 0.0, 0.0], [dimer_distance, 0.0, 0.0]],
+                            cell=self.dimer_box,
+                            pbc=True,
+                            )
+
+                        # Set calculator
+                        dimer_atoms.calc = calc
+                        # Get energy, forces and stress updating atoms object
+                        dimer_atoms.get_potential_energy()    
+                        
+                        #Set output file
+                        output_file = os.path.join(output_dimer_dir, f"dimer_{pair[0]}{pair[1]}_{dimer_distance}.xyz")
+                        # Write results to file
+                        write(output_file, frame)
+
+                        # Append output file to output dirs
+                        dirs["dirs_of_output"].append(output_file)
+                        dirs["config_type"].append("dimer")
+
+            except ValueError:
+                logging.error("Unknown atom types in dimers!")
+                traceback.print_exc()
+
+        return Response(output=dirs)
+
+
+@job
+def collect_labeled_data(
+    output_ref_file: str = "labels.extxyz",
+    rss_group: str = "RSS",
+    output_dirs: dict | None = None,
+    isolated_atom_energies: dict | None = None,
+) -> dict:
+    """
+    Collect VASP data from specified directories.
+
+    Parameters
+    ----------
+    output_ref_file : str
+        Reference file for collecting output data. Default is 'labels.extxyz'.
+    rss_group : str
+        Group name for GAP RSS. Default is 'RSS'.
+    output_dirs : dict
+        Dictionary containing output directories and configuration types. Should have keys:
+
+        - 'dirs_of_output': list
+            List of directories containing VASP data.
+        - 'config_type': list
+            List of configuration types corresponding to each directory.
+    isolated_atom_energies : dict
+        Dictionary containing isolated atom energies. Default is None.
+
+    Returns
+    -------
+    dict:
+        A dictionary containing
+
+        - 'output_ref_dir': Directory of the VASP reference file.
+        - 'isolated_atom_energies': Isolated energy values.
+    """
+    if output_dirs is None:
+        raise ValueError(
+            "output_dirs must be provided and should contain 'dirs_of_output' and 'config_type' keys."
+        )
+
+    if "dirs_of_output" not in output_dirs or "config_type" not in output_dirs:
+        raise ValueError(
+            "output_dirs must contain 'dirs_of_output' and 'config_type' keys."
+        )
+
+    dirs = [safe_strip_hostname(value) for value in output_dirs["dirs_of_output"]]
+    config_types = output_dirs["config_type"]
+
+    logging.info("Attempting collecting VASP...")
+
+    if dirs is None:
+        raise ValueError("dft_dir must be specified if collect_vasp is True")
+
+    atoms = []
+    isolated_atom_energies = {}
+
+    for i, val in enumerate(dirs):
+        # Val is already the output file
+        if os.path.exists(val):
+
+            #TODO: Check convergence
+            # else:
+            #     logging.warning(
+            #         f"Calculation did not converge for path: {val}"
+            #     )
+
+            at = read(val, index=":")
+            for at_i in at:
+                virial_list = (
+                    -voigt_6_to_full_3x3_stress(at_i.get_stress())
+                    * at_i.get_volume()
+                )
+                at_i.info["REF_virial"] = " ".join(map(str, virial_list.flatten()))
+                del at_i.calc.results["stress"]
+                at_i.arrays["REF_forces"] = at_i.calc.results["forces"]
+                del at_i.calc.results["forces"]
+                at_i.info["REF_energy"] = at_i.calc.results["free_energy"]
+                del at_i.calc.results["energy"]
+                del at_i.calc.results["free_energy"]
+                atoms.append(at_i)
+                at_i.info["config_type"] = config_types[i]
+                if (
+                    at_i.info["config_type"] != "dimer"
+                    and at_i.info["config_type"] != "IsolatedAtom"
+                ):
+                    at_i.pbc = True
+                    at_i.info["rss_group"] = rss_group
+                else:
+                    at_i.info["rss_nonperiodic"] = "T"
+
+                # if at_i.info["config_type"] == "IsolatedAtom":
+                #     at_ids = at_i.get_atomic_numbers()
+                #     # array_key = at_ids.tostring()
+                #     isolated_atom_energies[int(at_ids[0])] = at_i.info["REF_energy"]
+
+
+
+    logging.info(f"Total {len(atoms)} structures from VASP are exactly collected.")
+
+    write(output_ref_file, atoms, format="extxyz", parallel=False)
+
+    dir_path = os.getcwd()
+
+    output_ref_dir = os.path.join(dir_path, output_ref_file)
+
+    return {
+        "output_ref_dir": output_ref_dir,
+        "isolated_atom_energies": isolated_atom_energies,
+    }
