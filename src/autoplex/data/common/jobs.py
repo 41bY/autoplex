@@ -854,7 +854,7 @@ class MLIPStaticLabelling(Maker):
     @job
     def make(
         self,
-        structures: list[Structure], 
+        structure_paths: list[str], 
         config_type: str | None = None,
         ):
         """
@@ -862,17 +862,15 @@ class MLIPStaticLabelling(Maker):
 
         Parameters
         ----------
-        structures : list[Structure] | list[list[Structure]]
-            List of structures for which to run the VASP static calculations. If None,
+        structures : list[str]
+            List of path containing ase-readibile files of structures for which to run the static MLIP labelling. If None,
             no bulk calculations will be performed. Default is None.
         config_type : str
             Configuration types corresponding to the structures. If None, defaults
             to 'bulk'. Default is None.
         """
-        # if isinstance(structures[0], list):
-        #     structures = flatten(structures, recursive=False)
 
-        # Define output object
+        # Define output dictionary
         dirs: dict[str, list[str]] = {"dirs_of_output": [], "config_type": []}    
 
         # Load MLIP calculator
@@ -884,7 +882,7 @@ class MLIPStaticLabelling(Maker):
 
         # Load ASE atoms objects
         frames = []
-        for structure in structures:
+        for structure in structure_paths:
             frames += read(structure, index=":")
 
         #Define output directory
@@ -921,7 +919,7 @@ class MLIPStaticLabelling(Maker):
                 atoms = [at for at in frames]
                 if self.dimer_species is not None:
                     dimer_syms = self.dimer_species
-                elif (self.dimer_species is None) and (structures is not None):
+                elif (self.dimer_species is None) and (structure_paths is not None):
                     # Get the species from the database
                     dimer_syms = ElementCollection(atoms).get_species()
                 pairs_list = ElementCollection(atoms).find_element_pairs(dimer_syms)

@@ -173,6 +173,7 @@ def initial_GenMLFF(
     if dimer_box is None:
         dimer_box = [20.0, 20.0, 20.0]
 
+# Random Structure Search -> replace with Generattive Structure Search
     do_randomized_structure_generation = BuildMultiRandomizedStructure(
         generated_struct_numbers=generated_struct_numbers,
         buildcell_options=buildcell_options,
@@ -185,22 +186,48 @@ def initial_GenMLFF(
         bcur_params=bcur_params,
         random_seed=random_seed,
     ).make()
-    do_dft_static = DFTStaticLabelling(
-        e0_spin=e0_spin,
-        isolatedatom_box=isolatedatom_box,
-        isolated_atom=include_isolated_atom,
-        dimer=include_dimer,
-        dimer_box=dimer_box,
-        dimer_range=dimer_range,
-        dimer_num=dimer_num,
-        custom_incar=custom_incar,
-        custom_potcar=custom_potcar,
-    ).make(
-        structures=do_randomized_structure_generation.output, config_type=config_type
+
+# Static labelling calculations using pre-trained MLIP
+# Substitute DFT labelling for testing and debuggin purposes
+    do_mlip_static_labelling = MLIPStaticLabelling(
+        name="do_mlip_labelling",
+        isolated_atom=False,
+        isolated_species=None,
+        dimer=False,
+        dimer_species=None,
+        dimer_range=None,
+        dimer_num=21,
+        mlip_type="MACE",
+        mlip_path="/leonardo_work/EUHPC_A04_113/Alberto/mace/pre-trained-models/mace-mpa-0-medium.model", #Pre-trained model: testing
+        mlip_kwargs={"device" : "cuda"},
+    ).make(structure_paths=do_randomized_structure_generation.output, config_type=config_type)
+    # do_dft_static = DFTStaticLabelling(
+    #     e0_spin=e0_spin,
+    #     isolatedatom_box=isolatedatom_box,
+    #     isolated_atom=include_isolated_atom,
+    #     dimer=include_dimer,
+    #     dimer_box=dimer_box,
+    #     dimer_range=dimer_range,
+    #     dimer_num=dimer_num,
+    #     custom_incar=custom_incar,
+    #     custom_potcar=custom_potcar,
+    # ).make(
+    #     structures=do_randomized_structure_generation.output, config_type=config_type
+    # )
+
+# Data collection for labeled DFT data 
+# In the future this should work with multiple DFT-code (also pre-trained MLIP)
+    do_data_collection = collect_labeled_data(
+        output_ref_file="labels.extxyz", #Name of dumped labeled data
+        rss_group=rss_group,
+        output_dirs=do_mlip_static_labelling.output, #Dictionary containing "dirs_of_output" : list of labeled data dirs, "config_type" : List containing type of labeled data
+        isolated_atom_energies={6: -243.0252124389}, #Dictionary containing isolated atom energies, "atomic_number" : isolated_energy[eV]
     )
-    do_data_collection = collect_dft_data(
-        vasp_ref_file=vasp_ref_file, rss_group=rss_group, vasp_dirs=do_dft_static.output
-    )
+    # do_data_collection = collect_dft_data(
+    #     vasp_ref_file=vasp_ref_file, rss_group=rss_group, vasp_dirs=do_mlip_static_labelling.output
+    # )
+
+# Prepare data for MLIP fitting, this MLIP model is the one to train    
     do_data_preprocessing = preprocess_data(
         test_ratio=test_ratio,
         regularization=regularization,
@@ -209,11 +236,13 @@ def initial_GenMLFF(
         distillation=distillation,
         force_max=force_max,
         force_label=force_label,
-        vasp_ref_dir=do_data_collection.output["vasp_ref_dir"],
+        vasp_ref_dir=do_data_collection.output["dirs_of_output"],
         pre_database_dir=pre_database_dir,
         reg_minmax=reg_minmax,
         isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
     )
+
+# Train the MLIP model -> Substitute with an ensemble training    
     do_mlip_fit = MLIPFitMaker(
         mlip_type=mlip_type,
         ref_energy_name=ref_energy_name,
@@ -230,9 +259,10 @@ def initial_GenMLFF(
         **fit_kwargs,
     )
 
+#List of jobs defining the workflow
     job_list = [
         do_randomized_structure_generation,
-        do_dft_static,
+        do_mlip_static_labelling,
         do_data_collection,
         do_data_preprocessing,
         do_mlip_fit,
@@ -603,7 +633,7 @@ def do_GenMLFF_iterations(
         if include_dimer:
             include_dimer = False
 
-        do_iteration = do_rss_iterations(
+        do_iteration = do_GenMLFF_iterations(
             input={
                 "test_error": do_mlip_fit.output["test_error"],
                 "pre_database_dir": do_data_preprocessing.output,
