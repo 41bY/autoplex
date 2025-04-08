@@ -11,11 +11,12 @@ from autoplex.data.common.jobs import (
     collect_labeled_data,
     collect_dft_data,
     preprocess_data,
+    preprocess_data_ensemble,
     sample_data,
 )
 from autoplex.data.rss.flows import BuildMultiRandomizedStructure
 from autoplex.data.rss.jobs import do_rss_multi_node
-from autoplex.fitting.common.flows import MLIPFitMaker
+from autoplex.fitting.common.flows import MLIPFitMaker, EnsembleMLIPFitMaker
 
 __all__ = ["do_GenMLFF_iterations", "initial_GenMLFF"]
 
@@ -227,8 +228,9 @@ def initial_GenMLFF(
     #     vasp_ref_file=vasp_ref_file, rss_group=rss_group, vasp_dirs=do_mlip_static_labelling.output
     # )
 
-# Prepare data for MLIP fitting, this MLIP model is the one to train    
-    do_data_preprocessing = preprocess_data(
+# Prepare data for ensemble MLIP fitting
+    do_data_preprocessing_ensemble = preprocess_data_ensemble(
+        num_models=4, #Number of MLIP models in the ensemble, default is 4
         test_ratio=test_ratio,
         regularization=regularization,
         retain_existing_sigma=retain_existing_sigma,
@@ -241,10 +243,25 @@ def initial_GenMLFF(
         reg_minmax=reg_minmax,
         isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
     )
+    # do_data_preprocessing = preprocess_data(
+    #     test_ratio=test_ratio,
+    #     regularization=regularization,
+    #     retain_existing_sigma=retain_existing_sigma,
+    #     scheme=scheme,
+    #     distillation=distillation,
+    #     force_max=force_max,
+    #     force_label=force_label,
+    #     vasp_ref_dir=do_data_collection.output["dirs_of_output"],
+    #     pre_database_dir=pre_database_dir,
+    #     reg_minmax=reg_minmax,
+    #     isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
+    # )
 
-# Train the MLIP model -> Substitute with an ensemble training    
-    do_mlip_fit = MLIPFitMaker(
+
+# Fit the MLIP of the ensemble using the preprocessed data
+    do_mlip_ensemble_fit = EnsembleMLIPFitMaker(
         mlip_type=mlip_type,
+        num_models=4,
         ref_energy_name=ref_energy_name,
         ref_force_name=ref_force_name,
         ref_virial_name=ref_virial_name,
@@ -254,26 +271,42 @@ def initial_GenMLFF(
         glue_xml=False,
     ).make(
         isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
-        database_dir=do_data_preprocessing.output,
+        database_dir=do_data_preprocessing_ensemble.output,
         device=device_for_fitting,
         **fit_kwargs,
     )
+# # Train the MLIP model -> Substitute with an ensemble training    
+#     do_mlip_fit = MLIPFitMaker(
+#         mlip_type=mlip_type,
+#         ref_energy_name=ref_energy_name,
+#         ref_force_name=ref_force_name,
+#         ref_virial_name=ref_virial_name,
+#         num_processes_fit=num_processes_fit,
+#         apply_data_preprocessing=False,
+#         auto_delta=auto_delta,
+#         glue_xml=False,
+#     ).make(
+#         isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
+#         database_dir=do_data_preprocessing.output,
+#         device=device_for_fitting,
+#         **fit_kwargs,
+#     )
 
 #List of jobs defining the workflow
     job_list = [
         do_randomized_structure_generation,
         do_mlip_static_labelling,
         do_data_collection,
-        do_data_preprocessing,
-        do_mlip_fit,
+        do_data_preprocessing_ensemble,
+        do_mlip_ensemble_fit,
     ]
 
     return Response(
         replace=Flow(job_list),
         output={
-            "test_error": do_mlip_fit.output["test_error"],
-            "pre_database_dir": do_data_preprocessing.output,
-            "mlip_path": do_mlip_fit.output["mlip_path"],
+            "test_errors": do_mlip_ensemble_fit.output["test_errors"],
+            "pre_database_dir": do_data_preprocessing_ensemble.output,
+            "mlip_paths": do_mlip_ensemble_fit.output["mlip_paths"],
             "isolated_atom_energies": do_data_collection.output[
                 "isolated_atom_energies"
             ],

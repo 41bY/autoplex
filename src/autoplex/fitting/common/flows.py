@@ -233,6 +233,220 @@ class MLIPFitMaker(Maker):
 
         return Flow(jobs=mlip_fit_job, output=output, name=self.name)
 
+#Maker to perform ensemble MLIP fitting
+@dataclass
+class EnsembleMLIPFitMaker(Maker):
+    """
+    Maker to fit ML potentials based on DFT labelled reference data.
+
+    This Maker will filter the provided dataset in a data preprocessing step and then proceed
+    with the MLIP fit (default is GAP).
+
+    Parameters
+    ----------
+    name : str
+        Name of the flows produced by this maker.
+    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+        Choose one specific MLIP type to be fitted.
+    num_models: int
+        Number of models in the ensemble to be fitted.
+    hyperpara_opt: bool
+        Perform hyperparameter optimization using XPOT
+        (XPOT: https://pubs.aip.org/aip/jcp/article/159/2/024803/2901815)
+    ref_energy_name : str
+        Reference energy name.
+    ref_force_name : str
+        Reference force name.
+    ref_virial_name : str
+        Reference virial name.
+    glue_file_path: str
+        Name of the glue.xml file path.
+    split_ratio: float
+        Ratio to divide the dataset into training and test sets.
+        A value of 0.1 means 90% training data and 10% test data
+    force_max: float
+        Maximum allowed force in the dataset.
+    force_min: float
+        Minimal force cutoff value for atom-wise regularization.
+    regularization: bool
+        For using sigma regularization.
+    distillation: bool
+        For using data distillation.
+    separated: bool
+        Repeat the fit for each data_type available in the (combined) database.
+    pre_xyz_files: list[str] or None
+        Names of the pre-database train xyz file and test xyz file.
+    pre_database_dir: str or None
+        The pre-database directory.
+    atomwise_regularization_parameter: float
+        Regularization value for the atom-wise force components.
+    atom_wise_regularization: bool
+        For including atom-wise regularization.
+    auto_delta: bool
+        Automatically determine delta for 2b, 3b and soap terms.
+    glue_xml: bool
+        Use the glue.xml core potential instead of fitting 2b terms.
+    num_processes_fit: int
+        Number of processes for fitting.
+    apply_data_preprocessing: bool
+        Determine whether to preprocess the data.
+    run_fits_on_different_cluster: bool
+        If true, run fits on different clusters.
+    """
+
+    name: str = "Ensemble_MLIP_Fit"
+    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"] = "GAP"
+    num_models: int = 1
+    hyperpara_opt: bool = False
+    ref_energy_name: str = "REF_energy"
+    ref_force_name: str = "REF_forces"
+    ref_virial_name: str = "REF_virial"
+    glue_file_path: str = "glue.xml"
+    split_ratio: float = 0.4
+    force_max: float = 40.0
+    force_min: float = 0.01  # unit: eV Å-1
+    distillation: bool = True
+    separated: bool = False
+    pre_xyz_files: list[str] | None = None
+    pre_database_dir: str | None = None
+    regularization: bool = False  # This is only used for GAP.
+    atomwise_regularization_parameter: float = 0.1  # This is only used for GAP.
+    atom_wise_regularization: bool = True  # This is only used for GAP.
+    auto_delta: bool = False  # This is only used for GAP.
+    glue_xml: bool = False  # This is only used for GAP.
+    num_processes_fit: int | None = None
+    apply_data_preprocessing: bool = True
+    run_fits_on_different_cluster: bool = False
+
+    def make(
+        self,
+        database_dir: Path | str | None = None,
+        fit_input: dict | None = None,  # This is specific to phonon workflow
+        hyperparameters: MLIP_HYPERS = MLIP_HYPERS,
+        species_list: list | None = None,
+        isolated_atom_energies: dict | None = None,
+        device: str = "cpu",
+        **fit_kwargs,
+    ):
+        """
+        Make a flow for fitting an ensemble of MLIP models.
+
+        Parameters
+        ----------
+        database_dir: Path | str
+            Path to the directory containing the databases.
+        fit_input: dict
+            Output from the CompletePhononDFTMLDataGenerationFlow process.
+        hyperparameters: MLIP_HYPERS
+            Hyperparameters for the MLIP.
+        species_list: list
+            List of element names (strings) involved in the training dataset
+        isolated_atom_energies: dict
+            Dictionary of isolated atoms energies.
+        device: str
+            Device to be used for model fitting, either "cpu" or "cuda".
+        fit_kwargs: dict
+            Additional keyword arguments for MLIP fitting.
+        """
+        if self.mlip_type not in ["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]:
+            raise ValueError(
+                "Please correct the MLIP name!"
+                "The current version ONLY supports the following models: GAP, J-ACE, NEP, NEQUIP, M3GNET, and MACE."
+            )
+
+        #Define job list and output of this workflow
+        output = {"mlip_paths": [], "train_errors": [], "test_errors": [], "convergences": [], "database_dir": self.pre_database_dir}
+        jobs = []
+        
+        #Is it necessary? Assume false for the moment
+        if self.apply_data_preprocessing:
+            data_prep_job = DataPreprocessing(
+                split_ratio=self.split_ratio,
+                regularization=self.regularization,
+                separated=self.separated,
+                distillation=self.distillation,
+                force_max=self.force_max,
+                pre_xyz_files=self.pre_xyz_files,
+                pre_database_dir=self.pre_database_dir,
+                force_min=self.force_min,
+                ref_virial_name=self.ref_virial_name,
+                ref_force_name=self.ref_force_name,
+                ref_energy_name=self.ref_energy_name,
+                atomwise_regularization_parameter=self.atomwise_regularization_parameter,
+                atom_wise_regularization=self.atom_wise_regularization,
+                run_fits_on_different_cluster=self.run_fits_on_different_cluster,
+            ).make(
+                fit_input=fit_input,
+            )
+            jobs.append(data_prep_job)
+
+            mlip_fit_job = machine_learning_fit(
+                database_dir=data_prep_job.output["database_dir"],
+                run_fits_on_different_cluster=self.run_fits_on_different_cluster,
+                isolated_atom_energies=isolated_atom_energies,
+                num_processes_fit=self.num_processes_fit,
+                auto_delta=self.auto_delta,
+                glue_xml=self.glue_xml,
+                glue_file_path=self.glue_file_path,
+                mlip_type=self.mlip_type,
+                hyperpara_opt=self.hyperpara_opt,
+                hyperparameters=hyperparameters,
+                ref_energy_name=self.ref_energy_name,
+                ref_force_name=self.ref_force_name,
+                ref_virial_name=self.ref_virial_name,
+                device=device,
+                species_list=species_list,
+                database_dict=data_prep_job.output["database_dict"],
+                **fit_kwargs,
+            )
+            jobs.append(mlip_fit_job)
+            output = {
+                "mlip_path": mlip_fit_job.output["mlip_path"],
+                "train_error": mlip_fit_job.output["train_error"],
+                "test_error": mlip_fit_job.output["test_error"],
+                "convergence": mlip_fit_job.output["convergence"],
+                "database_dir": data_prep_job.output["database_dir"],
+            }
+            return Flow(jobs=jobs, output=output, name=self.name)
+
+        #Get the top-level database directory
+        root_database_dir = Path(database_dir)
+        for model_index in range(self.num_models):
+            #Get data sub-directory for each model
+            model_database_dir = os.path.join(root_database_dir, f"NN{model_index}")
+            if not os.path.exists(model_database_dir): raise ValueError(f"Model directory {model_database_dir} does not exist!")
+
+            #Instance of MLIP fit job
+            mlip_fit_job = machine_learning_fit(
+                database_dir=model_database_dir,
+                isolated_atom_energies=isolated_atom_energies,
+                num_processes_fit=self.num_processes_fit,
+                auto_delta=self.auto_delta,
+                glue_xml=self.glue_xml,
+                glue_file_path=self.glue_file_path,
+                mlip_type=self.mlip_type,
+                hyperpara_opt=self.hyperpara_opt,
+                hyperparameters=hyperparameters,
+                ref_energy_name=self.ref_energy_name,
+                ref_force_name=self.ref_force_name,
+                ref_virial_name=self.ref_virial_name,
+                device=device,
+                species_list=species_list,
+                **fit_kwargs,
+            )
+
+            # Append the job to the list of jobs 
+            # TODO: check that jf should create 1 working directory for each job
+            jobs.append(mlip_fit_job)
+
+            # Append the output of the job to the output dictionary
+            output["mlip_paths"].append(mlip_fit_job.output["mlip_path"])
+            output["train_errors"].append(mlip_fit_job.output["train_error"])
+            output["test_errors"].append(mlip_fit_job.output["test_error"])
+            output["convergences"].append(mlip_fit_job.output["convergence"])
+
+        return Flow(jobs=jobs, output=output, name=self.name)
+    
 
 @dataclass
 class DataPreprocessing(Maker):
