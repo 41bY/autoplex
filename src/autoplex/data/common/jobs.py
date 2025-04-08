@@ -37,6 +37,7 @@ from autoplex.data.common.utils import (
     scale_cell,
     std_rattle,
     stratified_dataset_split,
+    stratified_dataset_split_ensemble,
     to_ase_trajectory,
 )
 from autoplex.fitting.common.regularization import set_custom_sigma
@@ -1069,3 +1070,149 @@ def collect_labeled_data(
         "output_ref_dir": output_ref_dir,
         "isolated_atom_energies": isolated_atom_energies,
     }
+
+
+@job
+def preprocess_data_ensemble(
+    num_models: int,
+    labeled_data_file: str,
+    test_ratio: float | None = None,
+    regularization: bool = False,
+    retain_existing_sigma: bool = False,
+    scheme: str = "linear-hull",
+    distillation: bool = False,
+    force_max: float = 40,
+    force_label: str = "REF_forces",
+    energy_label: str = "REF_energy",
+    pre_database_dir: str | None = None,
+    reg_minmax: list[tuple] | None = None,
+    isolated_atom_energies: dict | None = None,
+) -> Path:
+    """
+    Preprocesse data to before fiting machine learning models.
+
+    This function handles tasks such as splitting the dataset,
+    applying regularization, accumulating database, and filtering
+    structures based on maximum force values.
+
+    Parameters
+    ----------
+    num_models: int
+        Number of models in the ensemble that will be trained.
+    labeled_data_file: str
+        Path to the file containing the DFT calculations data. It must be an ASE-readable file.
+    test_ratio: float
+        The proportion of the test set after splitting the data.
+        If None, no splitting will be performed.
+    regularization: bool
+        If true, apply regularization. This only works for GAP.
+    retain_existing_sigma: bool
+        Whether to keep the current sigma values for specific configuration types.
+        If set to True, existing sigma values for specific configurations will remain unchanged.
+    scheme: str
+        Scheme to use for regularization.
+    distillation: bool
+        If True, apply data distillation.
+    force_max: float
+        Maximum force value to exclude structures.
+    force_label: str
+        The label of force values to use for distillation.
+    energy_label: str
+        The label of energy values to use for distillation.
+    pre_database_dir : str
+        Directory where the previous database was saved.
+    reg_minmax: list[tuple]
+        A list of tuples representing the minimum and maximum
+        values for regularization.
+    isolated_atom_energies: dict
+        A dictionary containing isolated energy values for different species.
+
+    Returns
+    -------
+    Path
+        The current working directory.
+    """
+
+    #Collect labeled data, excluding structures with forces larger than force_max
+    atoms = (
+        data_distillation(labeled_data_file, force_max, force_label)
+        if distillation
+        else read(labeled_data_file, index=":")
+    )       
+
+    #Perform stratified dataset split with cross-validation
+    train_index_folds, test_index_folds, train_structure_folds, test_structures_folds = stratified_dataset_split_ensemble(
+            atoms, 
+            num_models,
+            test_ratio, 
+            energy_label
+            )
+
+    #Collect previous datasets
+    if pre_database_dir and os.path.exists(pre_database_dir):
+        #Get previous dataset for training
+        pre_data_train = read(
+            os.path.join(pre_database_dir, "train.extxyz"), index=":"
+        )
+        pre_train_num_frames = len(pre_data_train)
+
+        #Get previous dataset for testing
+        pre_data_test = read(
+            os.path.join(pre_database_dir, "test.extxyz"), index=":"
+        )
+        pre_test_num_frames = len(pre_data_test)
+
+        #Update indeces and structures datasets for each fold
+        train_index_folds = [
+            np.concatenate((train_index, np.arange(pre_train_num_frames)))
+            for train_index in train_index_folds
+        ]
+        test_index_folds = [
+            np.concatenate((test_index, np.arange(pre_test_num_frames)))
+            for test_index in test_index_folds
+        ]
+        train_structure_folds = [
+            train_structure + pre_data_train for train_structure in train_structure_folds
+        ]
+        test_structures_folds = [
+            test_structure + pre_data_test for test_structure in test_structures_folds
+        ]
+    
+    #Write train and test structures to files for each fold, i.e. each model in the ensemble
+    current_dir = os.getcwd()
+    for model_index in range(num_models):
+        # Get indeces and structures for the current fold
+        train_index_fold, test_index_fold = train_index_folds[model_index], test_index_folds[model_index]
+        train_structure_fold, test_structure_fold = train_structure_folds[model_index], test_structures_folds[model_index]
+
+        #Get model directory
+        model_dir = os.path.join(current_dir, f"NN{model_index}")
+        os.makedirs(model_dir, exist_ok=True)
+
+        #Write indeces to files
+        train_index_fname, test_index_fname = os.path.join(model_dir, f"train_index.txt"), os.path.join(model_dir, f"test_index.txt")
+        np.savetxt(train_index_fname, train_index_fold, fmt="%d"), np.savetxt(test_index_fname, test_index_fold, fmt="%d")
+
+        # Write structures to files
+        train_data_fname, test_data_fname = os.path.join(model_dir, f"train.extxyz"), os.path.join(model_dir, f"test.extxyz")
+        write(train_data_fname, train_structure_fold, format="extxyz")
+        write(test_data_fname, test_structure_fold, format="extxyz")
+
+        #Apply regularization (only for GAP)
+        if regularization:
+            atoms_reg: list[Atoms] = read(train_data_fname, index=":")
+
+            if reg_minmax is None:
+                reg_minmax = [(0.1, 1), (0.001, 0.1), (0.0316, 0.316), (0.0632, 0.632)]
+
+            atom_with_sigma = set_custom_sigma(
+                atoms=atoms_reg,
+                reg_minmax=reg_minmax,
+                isolated_atom_energies=isolated_atom_energies,
+                scheme=scheme,
+                retain_existing_sigma=retain_existing_sigma,
+            )
+
+            write(train_data_fname, atom_with_sigma, format="extxyz")
+
+    return Path.cwd()

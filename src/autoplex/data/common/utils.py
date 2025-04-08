@@ -1550,6 +1550,80 @@ def stratified_dataset_split(
 
     return train_structures, test_structures
 
+def stratified_dataset_split_ensemble(
+    atoms: Atoms,
+    num_models: int, 
+    split_ratio: float, 
+    energy_label: str,
+) -> tuple[list[int], list[int], list[Atoms] | list[Atoms]]:
+    """
+    Apply stratified splitting to the dataset using (num_models)-fold cross-validation.
+    This function is used to create a training and test set for each model in the ensemble.
+
+    Parameters
+    ----------
+    atoms: Atoms
+        ASE Atoms object
+    num_models: int
+        Number of models to be used in the ensemble. Obtain a (num_models)-fold cross-validation split.
+    split_ratio: float
+        Parameter to divide the training set and the test set.
+    energy_label: str
+        The label for the energy property in the atoms.
+
+    Returns
+    -------
+    train_index_folds, test_index_folds, train_structure_folds, test_structures_folds:
+        Lists of split-up indeces and datasets for each fold.
+
+    """
+    atom_bulk = []
+    atom_isolated_and_dimer = []
+    for at in atoms:
+        if (
+            at.info["config_type"] != "dimer"
+            and at.info["config_type"] != "IsolatedAtom"
+        ):
+            atom_bulk.append(at)
+        else:
+            atom_isolated_and_dimer.append(at)
+
+    if len(atoms) != len(atom_bulk):
+        atoms = atom_bulk
+
+    # Need this try except block because the energy label is not present as info
+    try:
+        average_energies = np.array(
+            [atom.info[energy_label] / len(atom) for atom in atoms]
+        )
+    except KeyError:
+        average_energies = np.array(
+            [atom.get_potential_energy() / len(atom) for atom in atoms]
+        )
+    # sort by energy
+    sorted_indices = np.argsort(average_energies)
+    atoms = [atoms[i] for i in sorted_indices]
+    average_energies = average_energies[sorted_indices]
+
+    stratified_average_energies = pd.qcut(average_energies, q=2, labels=False)
+    split = StratifiedShuffleSplit(n_splits=num_models, test_size=split_ratio, random_state=42)
+
+    # Return stratified train-test split indeces for each fold
+    train_index_folds, test_index_folds = [], []
+    train_structure_folds, test_structures_folds = [], []
+    for idx, (train_index, test_index) in enumerate(split.split(atoms, stratified_average_energies)):
+        #Get training and test structures for each fold
+        train_structures, test_structures = [atoms[i] for i in train_index], [atoms[i] for i in test_index]
+
+        #Isolated atoms and dimers always go into training set
+        if atom_isolated_and_dimer:
+            train_structures = atom_isolated_and_dimer + train_structures
+        
+        #Update the folds
+        train_index_folds.append(train_index), test_index_folds.append(test_index)
+        train_structure_folds.append(train_structures), test_structures_folds.append(test_structures)
+
+    return train_index_folds, test_index_folds, train_structure_folds, test_structures_folds
 
 def create_soap_descriptor(
     soap_paras: dict[str, int | float | str], n_species: int, species_Z: str
