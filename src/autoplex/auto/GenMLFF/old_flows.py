@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from jobflow import Flow, Maker, Response, job
 
-from autoplex.auto.GenMLFF.jobs import do_GenMLFF_iterations, initial_GenMLFF
+from autoplex.auto.GenMLFF.old_jobs import do_GenMLFF_iterations, initial_GenMLFF
 from autoplex.settings import RssConfig
 
 
