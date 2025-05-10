@@ -1,9 +1,46 @@
 """Jobs for running the workflow."""
 
-from jobflow import job
+from jobflow import job, Flow, Response
 from dataclasses import field
 from autoplex.auto.GenMLFF.rss import RandomizedStructureMaker
 from autoplex.auto.GenMLFF.labelling import MLIPStaticLabelling
+
+@job
+def initial_iteration(
+    name: str = "initial_iteration",
+    rss_params: dict = field(default_factory=dict),
+    mlip_params: dict = field(default_factory=dict),
+):
+    """
+    Start the initial iteration of the workflow.
+    This function initializes the RandomizedStructureMaker and MLIPStaticLabelling.
+
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the RandomizedStructureMaker.
+    """
+
+    #Define joblist
+    joblist = []
+
+    #Initialize the RandomizedStructureMaker with the provided parameters
+    rss_job = RSS(**rss_params)
+    joblist.append(rss_job)
+
+    #Initialize the MLIPStaticLabelling with the provided parameters
+    mlip_job = MLscf(**mlip_params, structure_paths=rss_job.output)
+    joblist.append(mlip_job)
+
+    #Create a Flow object to manage the jobs
+    flow = Flow(jobs=joblist, name=name)
+
+    return Response(
+        replace=flow,
+        output={
+            "rss_output": rss_job.output,
+            "mlip_output": mlip_job.output,
+        })
 
 
 @job
