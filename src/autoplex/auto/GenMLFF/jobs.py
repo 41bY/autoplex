@@ -1,8 +1,9 @@
 """Jobs for running the workflow."""
 
 from jobflow import job
-
+from dataclasses import field
 from autoplex.auto.GenMLFF.rss import RandomizedStructureMaker
+from autoplex.auto.GenMLFF.labelling import MLIPStaticLabelling
 
 
 @job
@@ -48,19 +49,48 @@ def RSS(
 
 
 @job
-def MLIPStaticLabelling():
-    pass
+def MLscf(
+    name: str = "do_mlip_static_labelling",
+    mlip_type: str | None = None,
+    mlip_kwargs: dict | None = None,
+    structure_paths: list[str] | None = None,
+    structure_types: list[str] | None = None,
+    isolated_atom: bool = False,
+    isolated_species: list[str] | None = None,
+    isolatedatom_box: list[float] | None = None,
+    dimer: bool = False,
+    dimer_pairs: list[tuple[str]] | None = None,
+    dimer_range: list[float] | None = None,
+    dimer_num: int = 21,
+    dimer_box: list[float] | None = None,
+):
+    """
+    Initialize the MLIPStaticLabelling with the provided parameters.
 
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the MLIPStaticLabelling.
+    """
+    #Parameters for MLIPStaticLabelling
+    mlip_params = {
+        "name": name,
+        "mlip_type": mlip_type,
+        "mlip_kwargs": mlip_kwargs,    
+        "structure_paths": structure_paths,
+        "structure_types": structure_types,    
+        "isolated_atom": isolated_atom,
+        "isolated_species": isolated_species,
+        "isolatedatom_box": isolatedatom_box,
+        "dimer": dimer,
+        "dimer_pairs": dimer_pairs,
+        "dimer_range": dimer_range,
+        "dimer_num": dimer_num,
+        "dimer_box": dimer_box,
+    }
 
-do_mlip_static_labelling = MLIPStaticLabelling(
-    name="do_mlip_labelling",
-    isolated_atom=False,
-    isolated_species=None,
-    dimer=False,
-    dimer_species=None,
-    dimer_range=None,
-    dimer_num=21,
-    mlip_type="MACE",
-    mlip_path="/leonardo_work/EUHPC_A04_113/Alberto/mace/pre-trained-models/mace-mpa-0-medium.model", #Pre-trained model: testing
-    mlip_kwargs={"device" : "cuda"},
-).make(structure_paths=do_randomized_structure_generation.output, config_type=config_type) #Assume structure paths is list[path]
+    # Execute MLIP static labelling
+    # and return the paths to the labelled structures
+    labelled_structures_path = MLIPStaticLabelling(**mlip_params).make()
+
+    return labelled_structures_path

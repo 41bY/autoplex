@@ -2,15 +2,13 @@
 
 import logging
 import os
-import traceback
 from dataclasses import dataclass, field
+from itertools import combinations_with_replacement
 import numpy as np
 
 from ase import Atoms
 from ase.io import read, write
-from jobflow import Maker, job, Response
-
-from autoplex.data.common.utils import ElementCollection
+from jobflow import Maker
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -59,23 +57,21 @@ class MLIPStaticLabelling(Maker):
     """
 
     name: str = "do_mlip_labelling"
+    mlip_type: str | None = None
+    mlip_kwargs: dict | None = None
+    structure_paths: list[str] | None = None
+    structure_types: list[str] | None = None
     isolated_atom: bool = False
     isolated_species: list[str] | None = None
     isolatedatom_box: list[float] = field(default_factory=lambda: [20, 20, 20])
     dimer: bool = False
-    dimer_box: list[float] = field(default_factory=lambda: [20, 20, 20])
-    dimer_species: list[str] | None = None
+    dimer_pairs: list[tuple[str]] | None = None  
     dimer_range: list[float] | None = None
     dimer_num: int = 21
-    mlip_type: str | None = None
-    mlip_kwargs: dict | None = None
+    dimer_box: list[float] = field(default_factory=lambda: [20, 20, 20])
 
-    @job
-    def make(
-        self,
-        structure_paths: list[str], 
-        config_type: str | None = None,
-        ):
+
+    def make(self):
         """
         Maker to set up and run MLIP static batch calculations.
 
@@ -88,93 +84,192 @@ class MLIPStaticLabelling(Maker):
             Configuration types corresponding to the structures. If None, defaults
             to 'bulk'. Default is None.
         """
+
         # Load MLIP calculator
         mlff_ase_calc = self.load_mlff_model(
             mlip_type=self.mlip_type,
             mlip_kwargs=self.mlip_kwargs,
         )
 
-        # Define output dictionary
-        dirs: dict[str, list[str]] = {"dirs_of_output": [], "config_type": []}    
+        # Check if structure paths are correctly provided
+        if self.structure_paths is None:
+            raise ValueError("No structure paths provided. Please provide a list of paths to structures.")
+        if self.structure_types is not None:
+            assert len(self.structure_paths) == len(self.structure_types), "The length of structure_paths and structure_types must be the same."
+        else: #Assume structure types are all bulk
+            self.structure_types = ["bulk"] * len(self.structure_paths)        
 
-        # Load ASE atoms objects
-        frames = []
-        for structure in structure_paths:
-            frames += read(structure, index=":")
+        #Define ase atoms with results
+        computed_structures = []
 
-        #Define output directory
-        output_batch_dir = os.path.join(os.getcwd(), "batch_results")       
-        os.makedirs(output_batch_dir, exist_ok=True) 
-        
-        #Perform batch static calculations
-        for idx, frame in enumerate(frames):
-            # Set calculator
-            frame.calc = calc
-            # Get energy, forces and stress updating atoms object
-            frame.get_potential_energy()    
+        # Perform DFT-batch calculations
+        for structures_type, structures_path in zip(self.structure_types, self.structure_paths):
+            # Load structures
+            ase_structures = read(structures_path, index=":")
+
+            # Perform batch static calculations
+            tmp_structures = self.compute_structures(
+                atoms=ase_structures,
+                ase_calculator=mlff_ase_calc,
+            )
+            #Update structure type info
+            for structure in tmp_structures:
+                structure.info["structure_type"] = structures_type
             
-            #Set output file
-            output_file = os.path.join(output_batch_dir, f"result_{idx}.xyz")
-            # Write results to file
-            write(output_file, frame)
+            # Save computed structures
+            computed_structures += tmp_structures
+        
+        #Perform dimer calculations based on atoms
+        if self.dimer:
+            
+            #Get list of pairs
+            if self.dimer_pairs is None:
+                #Get unique atomic species
+                unique_species = set()
+                for atoms in computed_structures:
+                    unique_species.update(atoms.get_chemical_symbols())
+                unique_species = list(unique_species)
+                logging.info(f"Unique species found in structures: {unique_species}")
 
-            # Append output file to output dirs
-            dirs["dirs_of_output"].append(output_file)
-            if config_type:
-                dirs["config_type"].append(config_type)
+                #Get every combination of two species
+                dimer_pairs = list(combinations_with_replacement(unique_species, 2))
+                num_pairs = len(dimer_pairs)
+                logging.info(f"Number of dimer pairs: {num_pairs}")
             else:
-                dirs["config_type"].append("bulk")
+                dimer_pairs = self.dimer_pairs
 
-        if self.isolated_atom: #Isolated atoms with MLIP can be problematic...
+            #Create dimers geometries (ASE atoms objects)
+            dimers = self.create_dimers(
+                pairs=dimer_pairs,
+                dimer_range=self.dimer_range,
+                dimer_num=self.dimer_num,
+                dimer_box=self.dimer_box,
+            )
+
+            #Perform batch static calculations
+            tmp_dimers = self.compute_structures(
+                atoms=dimers,
+                ase_calculator=mlff_ase_calc,
+            )
+
+            #Update structure type info
+            for dimer in tmp_dimers:
+                dimer.info["structure_type"] = "dimer"
+
+            # Save computed structures
+            computed_structures += tmp_dimers            
+
+        #Isolated atoms with MLIP can be problematic...
+        if self.isolated_atom: 
+            logging.warning("Isolated atom calculations with MLIP can be problematic: provide isolated atom energies instead.")
             pass
 
-        if self.dimer:
-            #Define output directory
-            output_dimer_dir = os.path.join(os.getcwd(), "dimer_results")   
+        #Define output directory
+        output_dir = os.path.join(os.getcwd(), "batch_results")       
+        os.makedirs(output_dir, exist_ok=True) 
 
-            try:
-                atoms = [at for at in frames]
-                if self.dimer_species is not None:
-                    dimer_syms = self.dimer_species
-                elif (self.dimer_species is None) and (structure_paths is not None):
-                    # Get the species from the database
-                    dimer_syms = ElementCollection(atoms).get_species()
-                pairs_list = ElementCollection(atoms).find_element_pairs(dimer_syms)
-                for pair in pairs_list:
-                    for dimer_i in range(self.dimer_num):
-                        if self.dimer_range is not None:
-                            dimer_distance = self.dimer_range[0] + (
-                                self.dimer_range[1] - self.dimer_range[0]
-                            ) * float(dimer_i) / float(
-                                self.dimer_num - 1 + 0.000000000001
-                            )
-
-                        #Build dimer structure as ase atoms
-                        dimer_atoms = Atoms(
-                            symbols=[pair[0], pair[1]],
-                            positions=[[0.0, 0.0, 0.0], [dimer_distance, 0.0, 0.0]],
-                            cell=self.dimer_box,
-                            pbc=True,
-                            )
-
-                        # Set calculator
-                        dimer_atoms.calc = calc
-                        # Get energy, forces and stress updating atoms object
-                        dimer_atoms.get_potential_energy()    
-                        
-                        #Set output file
-                        output_file = os.path.join(output_dimer_dir, f"dimer_{pair[0]}{pair[1]}_{dimer_distance}.xyz")
-                        # Write results to file
-                        write(output_file, frame)
-
-                        # Append output file to output dirs
-                        dirs["dirs_of_output"].append(output_file)
-                        dirs["config_type"].append("dimer")
-
-            except ValueError:
-                logging.error("Unknown atom types in dimers!")
-                traceback.print_exc()
+        # Save structures to file
+        output_file = os.path.join(output_dir, f"labels.extxyz")
+        write(output_file, computed_structures, format="extxyz")
+        logging.info(f"Saved structures to {output_file}")
         
+        # Return the paths to the computed structures
+        return output_file
+
+    def compute_structures(
+        self, 
+        atoms: list[Atoms] | None = None,
+        ase_calculator: object | None = None,
+        ):
+        """
+        Compute structures contained in ASE atoms object using the given calculator.
+
+        Parameters
+        ----------
+        atoms : list[Atoms]
+            List of ASE Atoms objects.
+        ase_calculator : object | None
+            ASE calculator object to use for computations. If None, defaults to the
+            calculator set in the class.
+
+        Returns
+        -------
+        list[Atoms]
+            List of ASE Atoms objects representing the computed structures.
+        """
+        if atoms is None:
+            raise ValueError("Atoms list cannot be None.")
+        if ase_calculator is None:
+            raise ValueError("ASE calculator cannot be None.")
+        
+        #Perform batch static calculations
+        for frame in atoms:
+            # Set calculator
+            frame.calc = ase_calculator
+            
+            # Get energy, forces and stress updating atoms object
+            energy = frame.get_potential_energy()    
+            forces = frame.get_forces()
+            stress = frame.get_stress()
+
+            # Save energy, forces and stress to atoms object
+            frame.info["energy"] = energy
+            frame.arrays["forces"] = forces
+            frame.info["stress"] = stress
+
+            # Disconnect calculator to avoid io proble
+            frame.calc = None
+        
+        return atoms
+
+    def create_dimers(
+        self,
+        pairs: list[tuple[str]] | None = None,
+        dimer_range: list[float] | None = None,
+        dimer_num: int = 21,
+        dimer_box: list[float] | None = None,
+    ):
+        """
+        Compute dimers for the given atoms.
+
+        Parameters
+        ----------
+        atoms : list[Atoms]
+            List of ASE Atoms objects.
+        dimer_range : list[float] | None
+            Range of distances for dimer calculations. If None, defaults to [0.5, 2.0].
+        dimer_num : int
+            Number of different distances to consider for dimer calculations.
+        dimer_box : list[float] | None
+            The lattice constants of a dimer box. If None, defaults to [20, 20, 20].
+
+        Returns
+        -------
+        list[Atoms]
+            List of ASE Atoms objects representing the created dimers.
+        """
+        if dimer_range is None:
+            dimer_range = [0.5, 2.0]
+        if dimer_box is None:
+            dimer_box = [20, 20, 20]
+
+        dimer_atoms = []
+        dimer_distances = np.linspace(dimer_range[0], dimer_range[1], dimer_num)
+        for pair in pairs:
+            for distance in dimer_distances:
+                # Create dimer structure as ase atoms
+                atoms = Atoms(
+                    symbols=pair, 
+                    positions=[[0.0, 0.0, 0.0], 
+                    [distance, 0.0, 0.0]], 
+                    cell=dimer_box, 
+                    pbc=True)
+
+                #Append dimer atoms to list
+                dimer_atoms.append(atoms)
+
+        return dimer_atoms
+
     def load_mlff_model(
             self, 
             mlip_type: str = None,
@@ -210,56 +305,3 @@ class MLIPStaticLabelling(Maker):
                              Available forcefield types: MACE, GRACE, DP")
 
         return ase_calc
-
-    def compute_dimers(
-        self,
-        atoms: list[Atoms] | None = None,
-        dimer_range: list[float] | None = None,
-        dimer_num: int = 21,
-        dimer_box: list[float] | None = None,
-    ):
-        """
-        Compute dimers for the given atoms.
-
-        Parameters
-        ----------
-        atoms : list[Atoms]
-            List of ASE Atoms objects.
-        dimer_range : list[float] | None
-            Range of distances for dimer calculations. If None, defaults to [0.5, 2.0].
-        dimer_num : int
-            Number of different distances to consider for dimer calculations.
-        dimer_box : list[float] | None
-            The lattice constants of a dimer box. If None, defaults to [20, 20, 20].
-
-        Returns
-        -------
-        list[Atoms]
-            List of ASE Atoms objects representing the computed dimers.
-        """
-        if dimer_range is None:
-            dimer_range = [0.5, 2.0]
-        if dimer_box is None:
-            dimer_box = [20, 20, 20]
-
-        dimer_atoms = []
-        for atom in atoms:
-            dimer_distances = np.linspace(dimer_range[0], dimer_range[1], dimer_num)
-
-
-            for i in range(dimer_num):
-                dimer_distance = dimer_range[0] + (
-                    dimer_range[1] - dimer_range[0]
-                ) * float(i) / float(dimer_num - 1 + 0.000000000001)
-                dimer_atoms.append(
-                    Atoms(
-                        symbols=atom.symbols,
-                        positions=[
-                            [0.0, 0.0, 0.0],
-                            [dimer_distance, 0.0, 0.0],
-                        ],
-                        cell=dimer_box,
-                        pbc=True,
-                    )
-                )
-        return dimer_atoms
