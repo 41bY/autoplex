@@ -213,9 +213,9 @@ class MLIPStaticLabelling(Maker):
             stress = frame.get_stress()
 
             # Save energy, forces and stress to atoms object
-            frame.info["energy"] = energy
-            frame.arrays["forces"] = forces
-            frame.info["stress"] = stress
+            frame.info["REF_energy"] = energy
+            frame.arrays["REF_forces"] = forces
+            frame.info["REF_stress"] = stress
 
             # Disconnect calculator to avoid io proble
             frame.calc = None
