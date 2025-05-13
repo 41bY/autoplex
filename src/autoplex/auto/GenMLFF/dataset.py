@@ -79,7 +79,7 @@ class DatasetMaker(Maker):
                 )        
         
         #Write the splitted dataset to files
-        ensemble_dataset_dirs = self.write_splitted_dataset(
+        unique_dataset_path = self.write_splitted_dataset(
             output_file_name=self.output_file_name,
             ase_dataset=ase_dataset, 
             train_index_folds=train_index_folds, 
@@ -88,7 +88,7 @@ class DatasetMaker(Maker):
         )
         
         #Return the list of directories where the splitted indeces of the dataset are saved
-        return ensemble_dataset_dirs
+        return unique_dataset_path
 
     # TODO: Check 'regularization': what is it and how to use it?
     def write_splitted_dataset(self,
@@ -97,7 +97,7 @@ class DatasetMaker(Maker):
         train_index_folds: list[list[int]],
         test_index_folds: list[list[int]],                                 
         pre_database_dir: str | None = None,
-    ) -> list[str]:
+    ) -> Path:
         """
         Write the splitted dataset to files.
         This function is used to create a training and test set for each model in the ensemble.
@@ -156,7 +156,6 @@ class DatasetMaker(Maker):
 
 
         #Write cross-validation splitting indeces for each fold (i.e. model in the ensemble)
-        ensemble_dataset_dirs = []
         header_line = f"indices refered to unique datset {unique_dataset_fname}"
         for fold_id, (train_index_fold, test_index_fold) in enumerate(zip(train_index_folds, test_index_folds)):
             #Get model directory
@@ -168,10 +167,7 @@ class DatasetMaker(Maker):
             np.savetxt(train_index_fname, train_index_fold, fmt="%d", header=f"Train {header_line}")
             np.savetxt(test_index_fname, test_index_fold, fmt="%d", header=f"Test {header_line}")
 
-            #Save paths to the model directories
-            ensemble_dataset_dirs.append(model_dir)
-
-        return ensemble_dataset_dirs
+        return unique_dataset_fname
 
     def stratified_dataset_split_ensemble(self,
         atoms: Atoms,
