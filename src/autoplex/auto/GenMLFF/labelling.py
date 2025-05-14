@@ -1,19 +1,19 @@
 """Jobs to create training data for ML potentials."""
 
-import logging
 import os
+import logging
+import subprocess
+from glob import glob
 from dataclasses import dataclass, field
 from itertools import combinations_with_replacement
 import numpy as np
 
 from ase import Atoms
 from ase.io import read, write
-from jobflow import Maker
+from jobflow import job, Maker, Response
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-
-#My methods
 @dataclass
 class MLIPStaticLabelling(Maker):
     """
@@ -305,3 +305,166 @@ class MLIPStaticLabelling(Maker):
                              Available forcefield types: MACE, GRACE, DP")
 
         return ase_calc
+
+
+@dataclass
+class QEstaticLabelling(Maker):
+
+    qe_run_cmd: str = None #String with the command to run QE (including its executable path/or application name)
+    fname_pwi_template: str = None #Path to file containing the template computational parameters
+    fname_structures: str = None #Path to ASE-readible file containing the structures to be computed
+    num_qe_workers: int | None = None #Number of workers to use for the calculations. 
+
+    def make(self):
+        #Define jobs
+        joblist = []
+
+        # Load structures
+        structures = read(self.fname_structures, index=":")
+
+        # Write pwi input files for each structure
+        work_dir = os.getcwd()
+        os.rename
+        path_to_qe_workdir = os.path.join(work_dir, "scf_files")
+        for i, structure in enumerate(structures):
+            fname_new_pwi = os.path.join(path_to_qe_workdir, f"structure_{i}.pwi")
+            self.write_pwi(structure, self.fname_pwi_template, fname_new_pwi)
+
+        # Set number of QE workers
+        if self.num_qe_workers is None: # 1 worker per structure
+            num_qe_workers = len(glob(os.path.join(path_to_qe_workdir, "*.pwi")))
+        else: 
+            num_qe_workers = self.num_qe_workers
+
+        # Launch QE workers            
+        for id_qe_worker in range(num_qe_workers):
+           dict_of_success_pwi = self.run_qe_worker(
+               id=id_qe_worker,
+               command=self.qe_run_cmd,
+               work_dir=path_to_qe_workdir
+               )
+           
+           joblist.append(dict_of_success_pwi)
+
+
+        return Response(replace=joblist, output=dict_of_success_pwi.output)
+
+    def write_pwi(
+            self, 
+            structure: Atoms, 
+            fname_pwi_template: str,
+            fname_pwi_output: str,
+            ):
+        """
+        Write the pwi input file for the given structure.
+        """
+        # Read template file
+        tmp_pwi_lines = []
+        with open(fname_pwi_template, 'r') as f:
+            tmp_pwi_lines = f.readlines()
+
+        # Modify lines with structure information: 
+        # Assume ntyp, atom_types and pseudoptentials are already defined in the template and consistent with the structures
+        # Assume ibrav=0 and Kspacing is already defined in the template
+        idx_nat_line, idx_pos_line, idx_cell_line = 0, 0, 0
+        for i, line in enumerate(tmp_pwi_lines):
+            if 'nat' in line: idx_nat_line = i
+
+            elif 'ATOMIC_POSITIONS' in line: idx_pos_line = i
+
+            elif 'CELL_PARAMETERS' in line: idx_cell_line = i
+
+        # Cancel lines with ATOMIC_POSITIONS and CELL_PARAMETERS
+        if idx_pos_line == 0 and idx_cell_line > 0:
+            idx_to_delete = idx_pos_line
+            del(tmp_pwi_lines[idx_to_delete:])
+        
+        elif idx_pos_line > 0 and idx_cell_line == 0:
+            idx_to_delete = idx_pos_line
+            del(tmp_pwi_lines[idx_to_delete:])
+        
+        elif idx_pos_line > 0 and idx_cell_line > 0:
+            idx_to_delete = min([idx_pos_line, idx_cell_line])
+            del(tmp_pwi_lines[idx_to_delete:])
+        
+        # Write natoms
+        tmp_pwi_lines[idx_nat_line] = f'nat = {len(structure)}\n'
+
+        #Write cell lines
+        cell_lines = ["\nCELL_PARAMETERS (angstrom)\n"]
+        cell_lines += [f"{structure.cell[i, j]:.10f} {structure.cell[i, j]:.10f} {structure.cell[i, j]:.10f}\n" for i in range(3) for j in range(3)]
+        
+        #Write positions lines
+        pos_lines = ["\nATOMIC_POSITIONS (angstrom)\n"]
+        for i, atom in enumerate(structure):
+            pos_lines.append(f"{atom.symbol} {structure.positions[i, 0]:.10f} {structure.positions[i, 1]:.10f} {structure.positions[i, 2]:.10f}\n")
+
+        # Write the modified lines to the new pwi file
+        with open(fname_pwi_output, 'w') as f:
+            for line in tmp_pwi_lines:
+                f.write(line)
+            for line in cell_lines:
+                f.write(line)
+            for line in pos_lines:
+                f.write(line)
+
+    @job
+    def run_qe_worker(
+            self, 
+            id,
+            command,
+            work_dir,
+            ):
+        """
+        Run the QE command in a subprocess.
+        """
+        #Get pwi files
+        pwi_files = glob(os.path.join(work_dir, "*.pwi"))
+
+        #Check pwo does not exist
+        success_pwi = {}
+        for pwi in pwi_files:
+            #Try locking the pwi file
+            lock_pwi = self.lock_input(self, fname=pwi, worker_id=id)
+
+            if lock_pwi == "": continue #Skip to next pwi if lock failed
+
+            #Get pwo
+            pwo = pwi.replace(f'.pwi.lock_{id}', '.pwo')
+
+            #Launch QE calculation
+            success = self.run_qe(command, lock_pwi, pwo)
+
+            #Set success status
+            success_pwi[pwi] = success
+
+        return success_pwi
+
+    def run_qe(self, command, fname_pwi, fname_pwo):
+        """
+        Run the QE command in a subprocess. Execute one QuantumEspresso calculation on the current input file.
+        """
+        #Assemble QE command
+        run_cmd = f"{command} < {fname_pwi} >> {fname_pwo}"
+
+        success = False
+        try:        
+            # Launch QE and wait till ending
+            subprocess.run(run_cmd, shell=True, check=True, executable="/bin/bash")
+            
+            success = True
+        
+        except subprocess.CalledProcessError as e:
+            
+            success = False
+
+        return success
+    
+    def lock_input(self, fname, worker_id):
+        try:
+            os.rename(f'{fname}', f'{fname}.lock_{worker_id}')
+            lock_fname = f'{fname}.lock_{worker_id}'
+        except Exception as e:
+            lock_fname = ""  
+        
+        return lock_fname
