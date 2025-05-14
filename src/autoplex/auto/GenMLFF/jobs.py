@@ -1,11 +1,13 @@
 """Jobs for running the workflow."""
 
-from jobflow import job, Flow, Response
 from dataclasses import field
+from jobflow import job, Flow, Response
 from autoplex.auto.GenMLFF.rss import RandomizedStructureMaker
 from autoplex.auto.GenMLFF.labelling import MLIPStaticLabelling
 from autoplex.auto.GenMLFF.dataset import DatasetMaker
 from autoplex.auto.GenMLFF.training import MLIPEnsembleMaker
+from autoplex.auto.GenMLFF.sampling import EnsembleEvaluatorMaker
+
 
 @job
 def initial_iteration(
@@ -57,6 +59,42 @@ def initial_iteration(
             "mlip_output": mlip_job.output,
             "dataset_output": dataset_job.output,
             "training_output": mlip_ensemble_job.output,
+        })
+
+
+@job
+def standard_iteration(
+    name: str = "standard_iteration",
+    rss_params: dict = field(default_factory=dict),
+    sample_params: dict = field(default_factory=dict),
+    mlip_params: dict = field(default_factory=dict),
+    dataset_params: dict = field(default_factory=dict),
+    train_params: dict = field(default_factory=dict),
+):
+    """
+    Start the standard iteration of the workflow.
+    This function initializes the MLIPEnsembleEvaluator.
+
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the MLIPEnsembleEvaluator.
+    """
+
+    #Define joblist
+    joblist = []
+
+    # Initialize the MLIPEnsembleEvaluator with the provided parameters
+    mlip_evaluator_job = evaluate_mlip_ensemble(**mlip_params)
+    joblist.append(mlip_evaluator_job)
+
+    # Create a Flow object to manage the jobs
+    flow = Flow(jobs=joblist, name=name)
+
+    return Response(
+        replace=flow,
+        output={
+            "mlip_evaluator_output": mlip_evaluator_job.output,
         })
 
 
@@ -149,6 +187,7 @@ def MLscf(
 
     return labelled_structures_path
 
+
 @job
 def dataset_ensembler(
     name: str = "do_ensemble_split_dataset",
@@ -228,3 +267,45 @@ def fit_mlip_ensemble(
     fitted_model_paths = MLIPEnsembleMaker(**mlip_ensemble_params).make()
 
     return fitted_model_paths
+
+
+@job
+def evaluate_mlip_ensemble(
+    name: str = "do_relaxation_and_sampling",
+    mlip_type: str | None = None,
+    mlip_paths: list[str] | None = None,
+    mlip_errors: list[float] | None = None,
+    mlip_kwargs: dict | None = None,
+    structure_paths: list[str] | None = None,
+    pre_trained_model: str | None = None,
+    pre_trained_kwargs: dict | None = None,
+):
+    """
+    Initialize the MLIPEnsembleEvaluator with the provided parameters.
+
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the MLIPEnsembleEvaluator.
+    """
+    #Check if the mlip_paths and structure_paths are provided
+    if mlip_paths is None or structure_paths is None:
+        raise ValueError("mlip_paths and structure_paths must be provided.")
+    
+    #Collect parameters for MLIPEnsembleEvaluator
+    ensemble_evaluator_params = {
+        "mlip_type": mlip_type,
+        "mlip_paths": mlip_paths,
+        "mlip_errors": mlip_errors,
+        "mlip_kwargs": mlip_kwargs,
+        "structure_paths": structure_paths,
+        "pre_trained_model": pre_trained_model,
+        "pre_trained_kwargs": pre_trained_kwargs,
+    }
+
+    # Execute relaxation of the generated structures
+    # Perform the ensemble evaluation and sample the most "problematic" structures
+    # Return the paths to the sampled structures
+    evaluated_structures_path = EnsembleEvaluatorMaker(**ensemble_evaluator_params).make()
+
+    return evaluated_structures_path
