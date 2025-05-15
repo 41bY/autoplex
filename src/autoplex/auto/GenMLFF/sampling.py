@@ -65,9 +65,10 @@ class EnsembleEvaluatorMaker(Maker):
         )
 
         # Sample the structures based on the deviation of the ensemble of models
+        #TODO: Implement more sophisticated sampling methods
         sampled_structures = self.sample_structures(
             structures=relaxed_structures,
-            force_deviation_threshold=0.1, #TODO: Implement more sophisticated sampling methods
+            force_deviation_threshold=0.1, 
         )
 
         # Save the sampled structures to a file
@@ -116,8 +117,10 @@ class EnsembleEvaluatorMaker(Maker):
         # Get pilot model
         if pre_trained_model_path is not None:
             pilot_model = MACECalculator(model_paths=pre_trained_model_path, **pre_trained_kwargs)
+            logging.info(f"Pilot model set to pre-trained model: {pre_trained_model_path}")
         else:
             pilot_model = mlip_model
+            logging.info(f"Pilot model set to the best model in the ensemble")
 
         # Loop over structures
         relaxed_structures = []
