@@ -10,7 +10,7 @@ import numpy as np
 
 from ase import Atoms
 from ase.io import read, write
-from jobflow import job, Maker, Response
+from jobflow import job, Flow, Maker, Response
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -336,7 +336,9 @@ class QEstaticLabelling(Maker):
         joblist = []
 
         # Load structures
+        if self.fname_structures is None: raise ValueError("No structure paths provided. Please provide a list of paths to structures.")
         structures = read(self.fname_structures, index=":")
+        if len(structures) == 0: raise ValueError("No structures found in the provided file. Please provide a valid file with structures.")
 
         # Check pwi template
         pwi_template_lines = self.check_pwi_template(self.fname_pwi_template)
@@ -344,6 +346,8 @@ class QEstaticLabelling(Maker):
         # Write pwi input files for each structure
         work_dir = os.getcwd()
         path_to_qe_workdir = os.path.join(work_dir, "scf_files")
+        os.makedirs(path_to_qe_workdir, exist_ok=True)
+
         for i, structure in enumerate(structures):
             fname_new_pwi = os.path.join(path_to_qe_workdir, f"structure_{i}.pwi")
             self.write_pwi(
@@ -367,12 +371,13 @@ class QEstaticLabelling(Maker):
                work_dir=path_to_qe_workdir
                )
            
+           qe_worker.name = f"run_qe_worker_{id_qe_worker}"
            joblist.append(qe_worker)
            success_of_workers.append(qe_worker.output)
 
         # Output is a list of success status, one for each worker
         # The success status is a dictionary with the pwo file name as key and the calculation success status as value (True/False)
-        return Response(replace=joblist, output=success_of_workers)
+        return Response(replace=Flow(joblist), output=success_of_workers)
 
     def check_pwi_template(self, fname_template):
         """
@@ -403,11 +408,12 @@ class QEstaticLabelling(Maker):
             tmp_pwi_lines[idx_nat_line] = f'nat = \n'
         
         # Set K_points lines
+        # TODO: Set K_points lines based on the structure and K-spacing
         if idx_kpoints_line == 0: # K_POINTS not defined, assume Gamma point
             kpoints_lines = ["\nK_POINTS Gamma\n"]
         elif idx_kpoints_line > 0:
             kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+1]
-            del(tmp_pwi_lines[idx_kpoints_line:idx_pos_line])
+            del tmp_pwi_lines[idx_kpoints_line:]
 
         # Cancel lines with ATOMIC_POSITIONS and CELL_PARAMETERS
         if idx_pos_line == 0 and idx_cell_line > 0:
@@ -444,7 +450,7 @@ class QEstaticLabelling(Maker):
 
         #Write cell lines
         cell_lines = ["\nCELL_PARAMETERS (angstrom)\n"]
-        cell_lines += [f"{structure.cell[i, j]:.10f} {structure.cell[i, j]:.10f} {structure.cell[i, j]:.10f}\n" for i in range(3) for j in range(3)]
+        cell_lines += [f"{structure.cell[i, 0]:.10f} {structure.cell[i, 1]:.10f} {structure.cell[i, 2]:.10f}\n" for i in range(3)]
         
         #Write positions lines
         pos_lines = ["\nATOMIC_POSITIONS (angstrom)\n"]
@@ -477,12 +483,12 @@ class QEstaticLabelling(Maker):
         success_pwo = {}
         for pwi in pwi_files:
             #Try locking the pwi file
-            lock_pwi, pwo_fname = self.lock_input(self, fname=pwi, worker_id=id)
+            lock_pwi, pwo_fname = self.lock_input(pwi_fname=pwi, worker_id=id)
 
             if lock_pwi == "": continue #Skip to next pwi if lock failed
 
             #Launch QE calculation
-            success = self.run_qe(command, lock_pwi, pwo_fname)
+            success = self.run_qe(command=command, fname_pwi=lock_pwi, fname_pwo=pwo_fname)
 
             #Set success status
             success_pwo[pwo_fname] = success
