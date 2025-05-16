@@ -520,7 +520,7 @@ class QEstaticLabelling(Maker):
         pwi_lock_fname = ""
         #Check if pwo exists
         pwo_fname = pwi_fname.replace('.pwi', '.pwo')
-        if os.path.exists(pwo_fname): return pwi_lock_fname #If exists, skip to next pwi
+        if os.path.exists(pwo_fname): return pwi_lock_fname, pwo_fname #If exists, skip to next pwi
 
         # Try to lock the pwi file by renaming it
         pwi_lock_fname = f'{pwi_fname}.lock_{worker_id}'
