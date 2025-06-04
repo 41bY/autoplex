@@ -214,15 +214,15 @@ def QEscf(
     }
 
     # Execute QE static labelling
-    # and return the paths to the labelled structures
-    dict_of_fout_and_success = QEstaticLabelling(**qe_params).make()
+    # return a list containing (list[success], list[pwo], list[outdir]) for each worker
+    output_per_worker = QEstaticLabelling(**qe_params).make()
 
-    return dict_of_fout_and_success
+    return output_per_worker
 
 @job
 def dataset_ensembler(
     name: str = "do_ensemble_split_dataset",
-    labeled_data_file: str | None = None,
+    labeled_output: str | list | None = None,
     num_models: int = 1,
     test_ratio: float = 0.1,
     distill_force_max: float | None = None,
@@ -241,12 +241,12 @@ def dataset_ensembler(
         Dictionary containing the parameters for the DatasetEnsembler.
     """
     #Check if the labeled_data_file is provided
-    if labeled_data_file is None:
+    if labeled_output is None:
         raise ValueError("labeled_data_file must be provided.")
     
     #Collect parameters for DatasetMaker
     dataset_maker_params = {
-        "labeled_data_file": labeled_data_file,
+        "labeled_output": labeled_output,
         "num_models": num_models,
         "test_ratio": test_ratio,
         "distill_force_max": distill_force_max,

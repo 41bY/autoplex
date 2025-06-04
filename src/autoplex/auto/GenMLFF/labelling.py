@@ -337,7 +337,7 @@ class QEstaticLabelling(Maker):
 
         # Load structures
         if isinstance(self.fname_structures, str): #Single file with structures
-            if not os.path.exists(fname):
+            if not os.path.exists(self.fname_structures):
                 raise FileNotFoundError(f"File {self.fname_structures} does not exist.")            
             structures = read(self.fname_structures, index=":")
 
@@ -373,7 +373,7 @@ class QEstaticLabelling(Maker):
             num_qe_workers = self.num_qe_workers
 
         # Launch QE workers            
-        success_of_workers = []
+        outputs = []
         for id_qe_worker in range(num_qe_workers):
            qe_worker = self.run_qe_worker(
                id=id_qe_worker,
@@ -383,11 +383,11 @@ class QEstaticLabelling(Maker):
            
            qe_worker.name = f"run_qe_worker_{id_qe_worker}"
            joblist.append(qe_worker)
-           success_of_workers.append(qe_worker.output)
+           outputs.append(qe_worker.output) #Contains list of dict{'successes', 'pwo_files', 'outdirs'} for each worker
 
         # Output is a list of success status, one for each worker
         # The success status is a dictionary with the pwo file name as key and the calculation success status as value (True/False)
-        return Response(replace=Flow(joblist), output=success_of_workers)
+        return Response(replace=Flow(joblist), output=outputs)
 
     def check_pwi_template(self, fname_template):
         """
@@ -481,7 +481,10 @@ class QEstaticLabelling(Maker):
             if idx_outdir == 0: # outdir not defined, define it
                 pwi_template.insert(idx_diskio + 1, f"outdir = {structure_id}\n")
             else: # outdir is defined, update it
-                pwi_template[idx_outdir] = f"outdir = {structure_id}\n"
+                pwi_template[idx_outdir] = f"outdir = '{structure_id}'\n"
+        else: #disk_io is 'none', remove outdir line
+            if idx_outdir == 0:
+                pwi_template.insert(idx_diskio + 1, f"outdir = 'OUT'\n")
 
         #Write cell lines
         cell_lines = ["\nCELL_PARAMETERS (angstrom)\n"]
@@ -515,20 +518,29 @@ class QEstaticLabelling(Maker):
         pwi_files = glob(os.path.join(work_dir, "*.pwi"))
 
         #Check pwo does not exist
-        success_pwo = {}
+        worker_output = {'success' : [], 'pwo' : [], 'outdir' : []}
         for pwi in pwi_files:
             #Try locking the pwi file
             lock_pwi, pwo_fname = self.lock_input(pwi_fname=pwi, worker_id=id)
 
             if lock_pwi == "": continue #Skip to next pwi if lock failed
 
+            #Get output directory of this calculation
+            with open(lock_pwi, 'r') as f:
+                pwi_lines = f.readlines()
+            outdir_line = [line.split('=')[1] for line in pwi_lines if 'outdir' in line][0]
+            outdir_line = outdir_line.strip().replace("'", "").replace('"', '')  # Remove quotes
+            outdir = os.getcwd() + f"/{outdir_line}"
+
             #Launch QE calculation
             success = self.run_qe(command=command, fname_pwi=lock_pwi, fname_pwo=pwo_fname)
 
-            #Set success status
-            success_pwo[pwo_fname] = success
+            #Update output
+            worker_output['success'].append(success)
+            worker_output['pwo'].append(pwo_fname)
+            worker_output['outdir'].append(outdir)
 
-        return success_pwo
+        return worker_output
 
     def run_qe(self, command, fname_pwi, fname_pwo):
         """

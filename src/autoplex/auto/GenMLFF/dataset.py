@@ -40,7 +40,7 @@ class DatasetMaker(Maker):
         A dictionary containing isolated energy values for different species.
     """
     name: str = "do_dataset_preparation"
-    labeled_data_file: str = "labels.extxyz"
+    labeled_output: str | list | None = None
     num_models: int = 1
     test_ratio: float = 0.1
     distill_force_max: float | None = None
@@ -59,16 +59,41 @@ class DatasetMaker(Maker):
         Path
             The current working directory.
         """
-        #TODO: Collect labeled data: from DFT-outputs to ASE-readable file excluding non-converged calculations (compositional energies)
+        #TODO: Collect labeled data: from DFT-outputs or MLIP-output to ASE-atoms object
+        if isinstance(self.labeled_output, str): #Assume MLIP-type output
+            raw_atoms = read(self.labeled_output, index=":")
+        
+        elif isinstance(self.labeled_output, list): #Assume DFT-type output
+            
+            #Get dft output files
+            dft_output_files = []
+            for labeled_output in self.labeled_output: #Output from each DFT worker
+                if 'pwo' in labeled_output.keys() and 'success' in labeled_output.keys():
+                    for success, pwo in zip(labeled_output['success'], labeled_output['pwo']):
+                        if success:
+                            dft_output_files.append(pwo)
+                else: raise ValueError("The labeled_output should be a list of dictionaries with 'pwo' and 'success' keys.")
+            
+            #Read all DFT output files
+            raw_atoms = []
+            for dft_output_file in dft_output_files:
+                try:
+                    atoms = read(dft_output_file)
+                    raw_atoms.extend(atoms)
+                except Exception as e:
+                    logging.error(f"Error reading {dft_output_file}: {e}")
+            
+        else:
+            raise ValueError("The labeled_output should be a string or a list of dicts.")
 
         #Collect labeled data, excluding structures with forces larger than force_max
         if self.distill_force_max is not None:
             atoms = self.data_distillation(
-                self.labeled_data_file, 
+                raw_atoms, 
                 self.distill_force_max, 
                 self.force_label)
         else:
-            atoms = read(self.labeled_data_file, index=":")
+            atoms = raw_atoms
         
         #Perform stratified dataset split with cross-validation
         ase_dataset, train_index_folds, test_index_folds = self.stratified_dataset_split_ensemble(
@@ -170,7 +195,7 @@ class DatasetMaker(Maker):
         return unique_dataset_fname
 
     def stratified_dataset_split_ensemble(self,
-        atoms: Atoms,
+        atoms: list[Atoms],
         num_models: int, 
         split_ratio: float, 
         energy_label: str,
@@ -255,9 +280,12 @@ class DatasetMaker(Maker):
 
         return ase_dataset, train_index_folds, test_index_folds
 
-    def data_distillation(self,
-        labeled_data_file: str, force_max: float, force_label: str
-    ) -> list[Atom | Atoms]:
+    def data_distillation(
+            self,
+            atoms: list[Atoms], 
+            force_max: float, 
+            force_label: str,
+    ) -> list[Atoms]:
         """
         For data distillation.
 
@@ -276,8 +304,6 @@ class DatasetMaker(Maker):
             List of distilled atoms.
 
         """
-        atoms = read(labeled_data_file, index=":")
-
         atoms_distilled = []
         for at in atoms:
             try:
