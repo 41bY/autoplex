@@ -328,7 +328,7 @@ class QEstaticLabelling(Maker):
     name: str = "do_qe_labelling"
     qe_run_cmd: str | None = None #String with the command to run QE (including its executable path/or application name)
     fname_pwi_template: str | None = None #Path to file containing the template computational parameters
-    fname_structures: str | None = None #Path to ASE-readible file containing the structures to be computed
+    fname_structures: str | list[str] | None = None #Path or list[Path] to ASE-readible file containing the structures to be computed
     num_qe_workers: int | None = None #Number of workers to use for the calculations. 
 
     def make(self):
@@ -336,9 +336,19 @@ class QEstaticLabelling(Maker):
         joblist = []
 
         # Load structures
-        if self.fname_structures is None: raise ValueError("No structure paths provided. Please provide a list of paths to structures.")
-        structures = read(self.fname_structures, index=":")
-        if len(structures) == 0: raise ValueError("No structures found in the provided file. Please provide a valid file with structures.")
+        if isinstance(self.fname_structures, str): #Single file with structures
+            if not os.path.exists(fname):
+                raise FileNotFoundError(f"File {self.fname_structures} does not exist.")            
+            structures = read(self.fname_structures, index=":")
+
+        elif isinstance(self.fname_structures, list): #Multiple files with structures
+            if len(self.fname_structures) == 0: raise ValueError("No structures found in the provided file. Please provide a valid file with structures.")
+            structures = []
+            for fname in self.fname_structures:
+                if not os.path.exists(fname): raise FileNotFoundError(f"File {fname} does not exist.")
+                structures += read(fname, index=":")
+        else:
+            raise ValueError("No structure paths provided. Please provide path or a list of paths to ASE readable structures.")
 
         # Check pwi template
         pwi_template_lines = self.check_pwi_template(self.fname_pwi_template)
@@ -410,10 +420,21 @@ class QEstaticLabelling(Maker):
         # Set K_points lines
         # TODO: Set K_points lines based on the structure and K-spacing
         if idx_kpoints_line == 0: # K_POINTS not defined, assume Gamma point
-            kpoints_lines = ["\nK_POINTS Gamma\n"]
-        elif idx_kpoints_line > 0:
-            kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+1]
-            del tmp_pwi_lines[idx_kpoints_line:]
+            kpoints_lines = ["\nK_POINTS gamma\n"]
+
+        elif idx_kpoints_line > 0: # K_POINTS is defined, keep the line/s
+            if 'gamma' in tmp_pwi_lines[idx_kpoints_line] or 'Gamma' in tmp_pwi_lines[idx_kpoints_line]: # KPOINT is 1 line
+                kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+1]
+                del tmp_pwi_lines[idx_kpoints_line:]
+            elif 'automatic' in tmp_pwi_lines[idx_kpoints_line]: # KPOINTS is 2 lines
+                kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+2]
+                del tmp_pwi_lines[idx_kpoints_line:]
+            elif 'tpiba' in tmp_pwi_lines[idx_kpoints_line] or 'crystal' in tmp_pwi_lines[idx_kpoints_line]: #KPOINTS is multiple lines
+                num_ks = int(tmp_pwi_lines[idx_kpoints_line+1].split()[0]) #Get number of k-points
+                kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+num_ks+2] #Get k-points lines
+                del tmp_pwi_lines[idx_kpoints_line:]
+            else:
+                raise ValueError(f"K_POINTS format: {tmp_pwi_lines[idx_kpoints_line]} is unknown in pwi template file")
 
         # Cancel lines with ATOMIC_POSITIONS and CELL_PARAMETERS
         if idx_pos_line == 0 and idx_cell_line > 0:
@@ -442,11 +463,25 @@ class QEstaticLabelling(Maker):
         """
         Write the pwi input file for the given structure.
         """
-        # Write nat line
-        idx_nat_line, nat = 0, len(structure)
+        # Check pwi lines
+        idx_diskio, idx_outdir, idx_nat_line, nat = 0, 0, 0, len(structure)
         for idx, line in enumerate(pwi_template):
             if 'nat =' in line: idx_nat_line = idx
+            elif 'disk_io' in line: idx_diskio = idx
+            elif 'outdir' in line: idx_outdir = idx
+        
+        #Update number of atoms
         pwi_template[idx_nat_line] = f'nat = {nat}\n'
+
+        #Get identifier for this structure
+        structure_id = fname_pwi_output.split('/')[-1].replace('.pwi', '')
+
+        #Update outdir based on disk_io
+        if idx_diskio == 0 or 'none' not in pwi_template[idx_diskio]: #disk_io is not 'none' (QE default is low for scf)
+            if idx_outdir == 0: # outdir not defined, define it
+                pwi_template.insert(idx_diskio + 1, f"outdir = {structure_id}\n")
+            else: # outdir is defined, update it
+                pwi_template[idx_outdir] = f"outdir = {structure_id}\n"
 
         #Write cell lines
         cell_lines = ["\nCELL_PARAMETERS (angstrom)\n"]
