@@ -78,8 +78,7 @@ class DatasetMaker(Maker):
             raw_atoms = []
             for dft_output_file in dft_output_files:
                 try:
-                    atoms = read(dft_output_file)
-                    raw_atoms.extend(atoms)
+                    raw_atoms += [read(dft_output_file)]
                 except Exception as e:
                     logging.error(f"Error reading {dft_output_file}: {e}")
             
@@ -227,9 +226,9 @@ class DatasetMaker(Maker):
         atom_bulk = []
         atom_isolated_and_dimer = []
         for at in atoms:
-            if (
-                at.info["structure_type"] != "dimer"
-                and at.info["structure_type"] != "IsolatedAtom"
+            if ( 'structure_type' not in at.info or 
+                (at.info["structure_type"] != "dimer"
+                and at.info["structure_type"] != "IsolatedAtom")
             ):
                 atom_bulk.append(at)
             else:
