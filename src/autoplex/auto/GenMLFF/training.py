@@ -129,9 +129,16 @@ class MLIPEnsembleMaker(Maker):
             output["test_errors"].append(mlip_train_job.output["test_error"])
             output["convergences"].append(mlip_train_job.output["convergence"])
 
-        return Response(
-            replace=Flow(training_jobs),
+        #Define ensemble training flow
+        training_flow = Flow(
+            jobs=training_jobs,
+            name="training_mlip_flow",
             output=output,
+        )
+
+        return Response(
+            replace=training_flow,
+            output=training_flow.output,
         )
 
 
