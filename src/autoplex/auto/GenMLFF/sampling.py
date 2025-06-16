@@ -49,6 +49,8 @@ class EnsembleEvaluatorMaker(Maker):
         for path in self.structure_paths:
             structures += read(path, index=":")
 
+        print(f"Loaded {len(structures)} built using BuildCell") #DEBUG
+
         # Relax the structures using the pilot model
         relaxed_structures = self.relax_structures(
             structures=structures,
@@ -57,6 +59,8 @@ class EnsembleEvaluatorMaker(Maker):
             pre_trained_kwargs=self.pre_trained_kwargs,
         )
 
+        print(f"Relaxed {len(relaxed_structures)} structures.") #DEBUG
+
         # For each relaxed structure, evaluate the deviation of the ensemble of models
         # return list of ase atoms with: array['force_deviation'] and info['energy_deviation']
         relaxed_structures = self.evaluate_ensemble_deviation(
@@ -64,12 +68,17 @@ class EnsembleEvaluatorMaker(Maker):
             mlip_models=mlip_models,
         )
 
+        print(f"Evaluated the ensemble deviation for {len(relaxed_structures)} structures.") #DEBUG
+        print(f"Model deviations's shape = {[atoms.arrays["force_deviation"].shape for atoms in relaxed_structures]}") #DEBUG
+
         # Sample the structures based on the deviation of the ensemble of models
         #TODO: Implement more sophisticated sampling methods
         sampled_structures = self.sample_structures(
             structures=relaxed_structures,
             force_deviation_threshold=0.1, 
         )
+
+        print(f"Sampled {len(sampled_structures)} structures using ensemble deviation.") #DEBUG
 
         # Save the sampled structures to a file
         cwd = os.getcwd()
