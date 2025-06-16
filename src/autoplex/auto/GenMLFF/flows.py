@@ -185,7 +185,7 @@ def GenMLFlow(
     joblist.append(previous_iteration)
 
     #Loop over the number of requested iterations
-    for i in range(train_params.get("num_iterations", 1)):
+    for i in range(GenML_params.get("num_iterations", 1)):
         #Get ensemble MLIP
         ensemble_params['mlip_paths'] = previous_iteration.output['training_output']['mlip_paths']
         ensemble_params['mlip_errors'] = previous_iteration.output['training_output']['train_errors']
@@ -199,6 +199,7 @@ def GenMLFlow(
             dataset_params=dataset_params,
             train_params=train_params,
         )
+        current_iteration.name = f"standard_iteration_{i+1}"
         joblist.append(current_iteration)
 
         #Update the previous iteration to the current one
