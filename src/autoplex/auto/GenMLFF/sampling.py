@@ -86,7 +86,7 @@ class EnsembleEvaluatorMaker(Maker):
         sampled_structures = self.sample_structures(
             structures=relaxed_structures,
             deviation_threshold=0.1,
-            # relative=0.01, # Relative threshold for force deviation 
+            relative=0.01, # Relative threshold for force deviation 
         )
 
         print(f"Sampled {len(sampled_structures)} structures using ensemble deviation.") #DEBUG
