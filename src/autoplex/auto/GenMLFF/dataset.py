@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 
 from ase import Atom, Atoms
 from ase.io import read, write
@@ -246,38 +246,104 @@ class DatasetMaker(Maker):
             average_energies = np.array(
                 [atom.get_potential_energy() / len(atom) for atom in atoms]
             )
-        # sort by energy
+        # Sort atoms by increasing average energy
         sorted_indices = np.argsort(average_energies)
         atoms = [atoms[i] for i in sorted_indices]
         average_energies = average_energies[sorted_indices]
 
-        # Perform cross-validation stratified (on avg. energy) splitting
-        num_quantiles = 2
-        stratified_average_energies = pd.qcut(average_energies, q=num_quantiles, labels=False)
-
-        # Check that test_size is >= number_of_stratified_classes
-        if int(split_ratio * len(atoms)) < num_quantiles:
-            split_ratio = int(num_quantiles)
-            logging.warning(f"Test size ratio is too small. Setting test_size to number of quantiles = {split_ratio}.")
-        
-        # Create stratified train-test split
-        split = StratifiedShuffleSplit(n_splits=num_models, test_size=split_ratio, random_state=42)
-        # Return stratified train-test split indeces for each fold
-        train_index_folds, test_index_folds = [], []
-        for train_index, test_index in split.split(atoms, stratified_average_energies):
-            #Update the folds
-            train_index_folds.append(train_index), test_index_folds.append(test_index)
+        #Perform train-test ensemble splitting: stratified splitting on average energy or random splitting if not enough data
+        train_index_folds, test_index_folds = self._energy_stratified_split(
+                                                            atoms,
+                                                            average_energies,
+                                                            usr_num_quantiles=2,
+                                                            split_ratio=split_ratio,
+                                                            num_models=num_models
+                                                            )
         
         #Define unique ordered atoms dataset
         ase_dataset = atoms
 
-        # Append isolated atoms and dimers to training set
+        # Append whole sets of isolated atoms and dimers to training set
         if atom_isolated_and_dimer:
             iso_and_dimer_index = np.arange(len(atoms), len(atoms) + len(atom_isolated_and_dimer))
             train_index_folds = [np.concatenate((train_index, iso_and_dimer_index)) for train_index in train_index_folds]
             ase_dataset = atoms + atom_isolated_and_dimer 
 
         return ase_dataset, train_index_folds, test_index_folds
+    
+    def _energy_stratified_split(self,
+        atoms,
+        average_energies,
+        usr_num_quantiles=2,
+        split_ratio=0.2,
+        num_models=5
+    ):
+        
+        # Limit number of quantiles if few available data
+        num_frames = len(atoms)
+        max_q = max(1, num_frames // 2)
+        q = min(usr_num_quantiles, max_q)
+
+        # Create quantiles based on average energies
+        if q > 1:
+            labels = pd.qcut(
+                average_energies,
+                q=q,
+                labels=False,
+                duplicates='drop'
+            ).to_numpy()
+            
+            # If there are bins with less than 2 elements, merge them
+            uniq, cnts = np.unique(labels, return_counts=True)
+            small_bins = uniq[cnts < 2]
+            for sb in small_bins:
+                if sb == uniq.min():
+                    tgt = sb + 1
+                elif sb == uniq.max():
+                    tgt = sb - 1
+                else:
+                    low_cnt = cnts[uniq == sb - 1][0]
+                    high_cnt = cnts[uniq == sb + 1][0]
+                    tgt = sb - 1 if low_cnt > high_cnt else sb + 1
+                labels[labels == sb] = tgt
+        else:
+            labels = np.zeros(num_frames, dtype=int) # All atoms in one bin, if too few data
+
+        # Compute number of test samples
+        if isinstance(split_ratio, float):
+            n_test = int(split_ratio * num_frames)
+        else:
+            n_test = int(split_ratio)
+        
+        # Ensure n_test is at least the number of unique labels
+        if n_test < len(np.unique(labels)):
+            n_test = len(np.unique(labels))
+            logging.warning(f"Forcing number of test samples equal to the number of unique labels: {n_test}.")
+
+        # Choice the splitter based on the number of unique labels
+        if len(np.unique(labels)) < 2: # If only one unique label, use ShuffleSplit
+            splitter = ShuffleSplit(
+                n_splits=num_models,
+                test_size=n_test,
+                random_state=42
+            )
+            split_iter = splitter.split(atoms)
+        else: # If multiple unique labels, use StratifiedShuffleSplit
+            splitter = StratifiedShuffleSplit(
+                n_splits=num_models,
+                test_size=n_test,
+                random_state=42
+            )
+            split_iter = splitter.split(atoms, labels)
+
+        # Calculate train and test folds
+        train_folds, test_folds = [], []
+        for tr, ts in split_iter:
+            train_folds.append(tr)
+            test_folds.append(ts)
+
+        return train_folds, test_folds
+
 
     def data_distillation(
             self,

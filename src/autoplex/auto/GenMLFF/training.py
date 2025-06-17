@@ -144,7 +144,7 @@ class MLIPEnsembleMaker(Maker):
 
     def write_mlip_dataset(self, outdir: str, mlip_type: str, dataset: list[Atoms]) -> tuple[str, str]:
         """
-        Write the MACE input file.
+        Write the specific dataset for MLIP model in the ensemble.
 
         Parameters
         ----------
@@ -154,7 +154,7 @@ class MLIPEnsembleMaker(Maker):
         #Get cross-validated train and test data
         train_idx_file = os.path.join(outdir, "train_index.txt")
         test_idx_file = os.path.join(outdir, "test_index.txt")
-        train_index, test_index = np.loadtxt(train_idx_file, dtype=int), np.loadtxt(test_idx_file, dtype=int)
+        train_index, test_index = np.loadtxt(train_idx_file, dtype=int, ndmin=1), np.loadtxt(test_idx_file, dtype=int, ndmin=1)
 
         #Train-test splitting
         train_data = [dataset[i] for i in train_index]

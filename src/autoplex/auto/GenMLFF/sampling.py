@@ -69,7 +69,7 @@ class EnsembleEvaluatorMaker(Maker):
         )
 
         print(f"Evaluated the ensemble deviation for {len(relaxed_structures)} structures.") #DEBUG
-        print(f"Model deviations's shape = {[atoms.arrays["force_deviation"].shape for atoms in relaxed_structures]}") #DEBUG
+        print(f"Model deviations's shape = {[atoms.arrays['force_deviation'].shape for atoms in relaxed_structures]}") #DEBUG
 
         # Sample the structures based on the deviation of the ensemble of models
         #TODO: Implement more sophisticated sampling methods
