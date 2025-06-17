@@ -1,4 +1,5 @@
 import yaml
+import logging
 from dataclasses import field
 from jobflow import Flow, job, Response
 from autoplex.auto.GenMLFF.jobs import (
@@ -8,6 +9,11 @@ from autoplex.auto.GenMLFF.jobs import (
     QEscf,
     dataset_ensembler,
     fit_mlip_ensemble,
+)
+
+#Set logger
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", filename="mlip_fitting.log"
 )
 
 
