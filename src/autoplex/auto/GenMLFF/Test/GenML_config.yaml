@@ -1,0 +1,67 @@
+#Number of iterations for the GenML workflow
+num_iterations: 1
+
+#Parameters for Random Structure Search (RSS) using Buildcell
+rss_params:
+  "tag": "C" #Tag of systems. It can also be used for setting up elements and stoichiometry.
+  "generated_struct_numbers": [6, 6] #Expected number of generated randomized unit cells for each run
+  "buildcell_options": [ #Buildcell params for each buildcell run
+      {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{6,8,10,12,14,16,18,20,22,24}'}, 
+      {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{7,9,11,13,15,17,19,21,23}'},
+  ]
+  "remove_tmp_files": True #Remove all temporary files raised by buildcell to save memory
+  "num_processes": 1 #Number of processes to use for parallel computation
+  # "fragment_file": None #Fragment(s) for random structures, e.g. molecules, to be placed indivudally intact.
+
+#Parameters for the ensemble evaluator
+ensemble_params:
+  "mlip_type": "MACE"
+  "mlip_paths": []
+  "mlip_errors": []
+  "mlip_kwargs": {
+      "device" : "cuda", 
+      "default_dtype" : "float32",
+      }
+  "pre_trained_model": "/leonardo_work/EUHPC_A04_113/Alberto/mace/pre-trained-models/mace-mpa-0-medium.model"
+  "pre_trained_kwargs": {
+      "device" : "cuda", 
+      "default_dtype" : "float32",
+  }
+
+#Parameters for QuantumEspresso scf runs
+qe_params:
+  "qe_run_cmd": "mpirun -np 1 pw.x"
+  "num_qe_workers": 2 #Number of workers to use for the calculations. If None setp up 1 worker per scf
+  "fname_pwi_template": "/leonardo_work/EUHPC_A04_113/Alberto/GenMLFF-progect/Test-workflow/rss-mlip/reference.pwi" #Path to file containing the template QE input
+
+# #Parameters for MLIP scf runs
+# mlip_params:
+#   "mlip_type": "MACE" #Type of MLIP to be used
+#   "mlip_kwargs": {
+#       "model_paths":"/leonardo_work/EUHPC_A04_113/Alberto/mace/pre-trained-models/mace-mpa-0-medium.model", 
+#       "device" : "cuda"
+#   }
+#   "dimer" : True
+
+#Parameters for dataset ensembler
+dataset_params:
+  "pre_database_dir" : None
+  "num_models": 4
+  "test_ratio": 0.05
+  "distill_force_max": 20.0 #eV/Å
+
+
+#Parameters for ensemble training
+#Define parameters for ensemble training
+train_params:
+    "num_models": 4
+    "remove_model_datasets": True
+    "mlip_type": "MACE"
+    "mlip_train_kwargs": {
+        "device": "cuda",
+        "batch_size": 2,
+        "max_num_epochs": 10,
+        "swa": False,
+        "E0s": "{6 : -561.5463794436}",
+        "enable_cueq": False,
+    }
