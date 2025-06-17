@@ -336,19 +336,10 @@ class QEstaticLabelling(Maker):
         joblist = []
 
         # Load structures
-        if isinstance(self.fname_structures, str): #Single file with structures
-            if not os.path.exists(self.fname_structures):
-                raise FileNotFoundError(f"File {self.fname_structures} does not exist.")            
-            structures = read(self.fname_structures, index=":")
-
-        elif isinstance(self.fname_structures, list): #Multiple files with structures
-            if len(self.fname_structures) == 0: raise ValueError("No structures found in the provided file. Please provide a valid file with structures.")
-            structures = []
-            for fname in self.fname_structures:
-                if not os.path.exists(fname): raise FileNotFoundError(f"File {fname} does not exist.")
-                structures += read(fname, index=":")
-        else:
-            raise ValueError("No structure paths provided. Please provide path or a list of paths to ASE readable structures.")
+        structures = self.load_structures(fname_structures=self.fname_structures)
+        if len(structures) == 0:
+            logging.info("No structures found to compute with DFT. Exiting.")
+            return Response(replace=None, output=[])
 
         # Check pwi template
         pwi_template_lines = self.check_pwi_template(self.fname_pwi_template)
@@ -390,6 +381,43 @@ class QEstaticLabelling(Maker):
         # Output is a list of success status, one for each worker
         # The success status is a dictionary with the pwo file name as key and the calculation success status as value (True/False)
         return Response(replace=qe_wrk_flow, output=qe_wrk_flow.output)
+
+    def load_structures(self,
+            fname_structures: str | list[str] | None = None,
+            ):
+        """
+        Load structures from a file or a list of files.
+        Parameters
+        ----------
+        fname_structures : str | list[str] | None
+            Path or list of paths to ASE-readable files containing the structures to be loaded.
+            If None, no structures will be loaded.
+        Returns
+        -------
+        list[Atoms]
+            List of ASE Atoms objects representing the loaded structures.
+        """
+        #Convert fname_structures to a list if it is a string
+        if isinstance(fname_structures, str):
+            fname_structures = [fname_structures]
+        elif fname_structures is None:
+            return []
+        elif not isinstance(fname_structures, list):
+            raise ValueError("fname_structures must be a string or a list of strings.")
+        
+        #Loop over provided files and load structures
+        structures = []
+        for fname in fname_structures:
+            #Check if all files exist
+            if not os.path.exists(fname): raise FileNotFoundError(f"File {fname} does not exist.")
+        
+            #Read structures from file
+            try:
+                structures += read(fname, index=":")
+            except Exception as e:
+                logging.error(f"Error reading file {fname}: {e}")
+
+        return structures
 
     def check_pwi_template(self, fname_template):
         """
