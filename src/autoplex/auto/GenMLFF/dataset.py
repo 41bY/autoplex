@@ -84,6 +84,13 @@ class DatasetMaker(Maker):
             
         else:
             raise ValueError("The labeled_output should be a string or a list of dicts.")
+        
+        #Check if the labeled data is empty
+        if not raw_atoms:
+            msg = """No labeled data found.\n
+                If this is the expected behavior, your MLIP model is probably well-prepared.\n
+                Otherwise, please check the 'labeled_output' parameter.\n"""
+            raise ValueError(msg)
 
         #Collect labeled data, excluding structures with forces larger than force_max
         if self.distill_force_max is not None:
