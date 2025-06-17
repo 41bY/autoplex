@@ -298,7 +298,7 @@ class DatasetMaker(Maker):
                 q=q,
                 labels=False,
                 duplicates='drop'
-            ).to_numpy()
+            )
             
             # If there are bins with less than 2 elements, merge them
             uniq, cnts = np.unique(labels, return_counts=True)
