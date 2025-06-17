@@ -68,6 +68,16 @@ class EnsembleEvaluatorMaker(Maker):
             mlip_models=mlip_models,
         )
 
+        #Save the relaxed structures with the evaluated deviations
+        write("relaxed_structures.extxyz", 
+              relaxed_structures, 
+              format="extxyz", 
+              columns=['symbols', 
+                       'positions',
+                       'force_value',
+                       'force_deviation'],
+              write_info=True)
+
         print(f"Evaluated the ensemble deviation for {len(relaxed_structures)} structures.") #DEBUG
         print(f"Model deviations's shape = {[atoms.arrays['force_deviation'].shape for atoms in relaxed_structures]}") #DEBUG
 
@@ -75,7 +85,8 @@ class EnsembleEvaluatorMaker(Maker):
         #TODO: Implement more sophisticated sampling methods
         sampled_structures = self.sample_structures(
             structures=relaxed_structures,
-            force_deviation_threshold=0.1, 
+            deviation_threshold=0.1,
+            # relative=0.01, # Relative threshold for force deviation 
         )
 
         print(f"Sampled {len(sampled_structures)} structures using ensemble deviation.") #DEBUG
@@ -176,11 +187,11 @@ class EnsembleEvaluatorMaker(Maker):
             energy_value = np.mean(energies, axis=0)
             energy_deviation = np.std(energies, axis=0)
 
-            # Store the deviation in the structure
+            # Store results and deviations in the structure
             structure.calc = None
-            structure.forces = force_value
+            structure.arrays["force_value"] = force_value
             structure.arrays["force_deviation"] = force_deviation
-            structure.energy = energy_value
+            structure.info["energy_value"] = energy_value
             structure.info["energy_deviation"] = energy_deviation
 
         return structures
@@ -188,7 +199,8 @@ class EnsembleEvaluatorMaker(Maker):
     def sample_structures(
             self,
             structures: list[Atoms],
-            force_deviation_threshold: float = 0.1,
+            deviation_threshold: float = 0.1,
+            relative: float | None = None,
             ):
         """
         Function to sample the structures based on the deviation of the ensemble of models.
@@ -196,11 +208,20 @@ class EnsembleEvaluatorMaker(Maker):
         # Loop over structures
         sampled_structures = []
         for structure in structures:
-            # Get the force and energy deviation
+            # Get force values and deviations
+            force_value = structure.arrays["force_value"]
             force_deviation = structure.arrays["force_deviation"]
 
-            # Check if the deviation is above the threshold
-            if np.max(force_deviation) > force_deviation_threshold:
+            if relative is not None:
+                # Compute force relative deviation as metric
+                # Using relative as a filter parameter for small forces
+                deviation_metric = np.abs(force_value) / (np.abs(force_value) + relative)
+            else:
+                # Use absolute deviation as metric
+                deviation_metric = np.abs(force_deviation)
+
+            # Check if the maximum of deviation metric is above the threshold
+            if np.max(deviation_metric) > deviation_threshold:
                 sampled_structures.append(structure)
 
         return sampled_structures
