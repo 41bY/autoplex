@@ -3,6 +3,44 @@ import subprocess
 from dataclasses import dataclass
 from jobflow import job, Flow, Maker, Response
 
+def params_from_config(config: dict):
+    """
+    Return MatterGenMaker params from a configuration dictionary.
+
+    Args:
+        config (dict): Keys should match __init__ parameters. For example:
+            {
+                "results_path": "/path/to/results",
+                "model_path": "/path/to/model",
+                "batch_size": 128,
+                "num_batches": 1,
+                "record_trajectories": False
+            }
+
+    Returns:
+        MatterGenMaker: Initialized instance.
+    """
+    #Get default parameters
+    params = {
+        "name": "MatterGenMaker",
+        "results_path": "generated_structures",
+        "model_path": None,
+        "batch_size": 32,
+        "num_batches": 1,
+        "record_trajectories": False,
+        "properties_to_condition_on": None,
+        "diffusion_guidance_factor": None
+    }    
+
+    # Update parameters with values from the config file
+    if config is None: raise ValueError("Configuration file is empty or not properly formatted.")
+    params.update(config)
+
+    #Check a valid model path is provided
+    if not os.path.exists(params["model_path"]): raise ValueError(f"Model path '{params['model_path']}' not found.")
+
+    return params
+
 @dataclass
 class MatterGenMaker(Maker):
     """
@@ -94,42 +132,3 @@ class MatterGenMaker(Maker):
             raise RuntimeError(f"Failed to run MatterGen command: {e}")
 
         return extxyz_structures_path
-
-
-def params_from_config(config: dict):
-    """
-    Return MatterGenMaker params from a configuration dictionary.
-
-    Args:
-        config (dict): Keys should match __init__ parameters. For example:
-            {
-                "results_path": "/path/to/results",
-                "model_path": "/path/to/model",
-                "batch_size": 128,
-                "num_batches": 1,
-                "record_trajectories": False
-            }
-
-    Returns:
-        MatterGenMaker: Initialized instance.
-    """
-    #Get default parameters
-    params = {
-        "name": "MatterGenMaker",
-        "results_path": "generated_structures",
-        "model_path": None,
-        "batch_size": 32,
-        "num_batches": 1,
-        "record_trajectories": False,
-        "properties_to_condition_on": None,
-        "diffusion_guidance_factor": None
-    }    
-
-    # Update parameters with values from the config file
-    if config is None: raise ValueError("Configuration file is empty or not properly formatted.")
-    params.update(config)
-
-    #Check a valid model path is provided
-    if not os.path.exists(params["model_path"]): raise ValueError(f"Model path '{params['model_path']}' not found.")
-
-    return params
