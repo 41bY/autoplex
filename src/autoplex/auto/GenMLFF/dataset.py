@@ -8,10 +8,56 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 
-from ase import Atom, Atoms
+from ase import Atoms
 from ase.io import read, write
 from jobflow import Maker
 
+def data_ensembler_from_config(config: dict):
+    """
+    Return DatasetMaker params from a configuration dictionary.
+
+    Args:
+        config (dict): Keys should match __init__ parameters. For example:
+        {
+            "labeled_output": labeled_output,
+            "num_models": num_models,
+            "test_ratio": test_ratio,
+            "distill_force_max": distill_force_max,
+            "force_label": force_label,
+            "energy_label": energy_label,
+            "output_file_name": output_file_name,
+            "pre_database_dir": pre_database_dir,
+            "init_database_dir": init_database_dir,
+            "isolated_atom_energies": isolated_atom_energies
+        }
+
+    Returns:
+        params: dict
+            Dictionary with parameters for QEstaticLabelling.
+    """
+    #Get default parameters
+    #Collect parameters for DatasetMaker
+    params = {
+        "labeled_output": None,
+        "num_models": 1,
+        "test_ratio": 0.05,
+        "distill_force_max": 30.0,
+        "force_label": "REF_forces",
+        "energy_label": "REF_energy",
+        "output_file_name": "unique_dataset.extxyz",
+        "pre_database_dir": None,
+        "init_database_dir": None,
+        "isolated_atom_energies": None
+    } 
+
+    # Update parameters with values from the config file
+    if config is None: raise ValueError("Configuration file is empty or not properly formatted.")
+    params.update(config)
+
+    #Check labeled data path is provided
+    if params["labeled_output"] is None: raise ValueError(f"Please provide a path or a list of path containing SCF labeled data files.")
+
+    return params
 
 @dataclass
 class DatasetMaker(Maker):
@@ -48,6 +94,7 @@ class DatasetMaker(Maker):
     energy_label: str = "REF_energy"
     output_file_name: str | None = "unique_dataset.extxyz"
     pre_database_dir: str | None = None
+    init_database_dir: str | None = None
     isolated_atom_energies: dict | None = None
 
     def make(self) -> Path:
@@ -59,7 +106,7 @@ class DatasetMaker(Maker):
         Path
             The current working directory.
         """
-        #TODO: Collect labeled data: from DFT-outputs or MLIP-output to ASE-atoms object
+        #Collect labeled data from current iteration
         if isinstance(self.labeled_output, str): #Assume MLIP-type output
             raw_atoms = read(self.labeled_output, index=":")
         
@@ -88,11 +135,11 @@ class DatasetMaker(Maker):
         #Check if the labeled data is empty
         if not raw_atoms:
             msg = """No labeled data found.\n
-                If this is the expected behavior, your MLIP model is probably well-prepared.\n
+                If this is the expected behavior, your MLIP model may have explored sufficiently the chemical space.\n
                 Otherwise, please check the 'labeled_output' parameter.\n"""
             raise ValueError(msg)
 
-        #Collect labeled data, excluding structures with forces larger than force_max
+        #Distill labeled data, excluding structures with forces larger than force_max
         if self.distill_force_max is not None:
             atoms = self.data_distillation(
                 raw_atoms, 
@@ -100,6 +147,31 @@ class DatasetMaker(Maker):
                 self.force_label)
         else:
             atoms = raw_atoms
+        
+        #Load initial dataset if provided
+        if self.init_database_dir is not None and os.path.exists(self.init_database_dir):
+            #Read initial dataset
+            init_data = read(self.init_database_dir, index=":")
+        else: init_data = []
+        
+        #Load previous iteration dataset if provided
+        if self.pre_database_dir is not None and os.path.exists(self.pre_database_dir):
+            #Read previous dataset
+            pre_data = read(self.pre_database_dir, index=":")
+        else: pre_data = []
+
+        #Previous iteration dataset is the union of init_data (if provided) and data generated during the iterations
+        #We need to remove initial dataset from previous iteration dataset before stratify and split the dataset
+        if pre_data:
+            if init_data:
+                #Remove initial dataset from previous iteration dataset
+                pre_data = [at for at in pre_data if at not in init_data]
+            else:
+                #If no initial dataset is provided, previous iteration dataset is entirely generated data during iterations
+                pre_data = pre_data
+        
+        #Update data generated during previous + current iterations
+        atoms = pre_data + atoms
         
         #Perform stratified dataset split with cross-validation
         ase_dataset, train_index_folds, test_index_folds = self.stratified_dataset_split_ensemble(
@@ -115,7 +187,7 @@ class DatasetMaker(Maker):
             ase_dataset=ase_dataset, 
             train_index_folds=train_index_folds, 
             test_index_folds=test_index_folds,
-            pre_database_dir=self.pre_database_dir
+            init_data=init_data,
         )
         
         #Return the list of directories where the splitted indeces of the dataset are saved
@@ -127,7 +199,7 @@ class DatasetMaker(Maker):
         ase_dataset: list[Atoms],
         train_index_folds: list[list[int]],
         test_index_folds: list[list[int]],                                 
-        pre_database_dir: str | None = None,
+        init_data: Atoms | list[Atoms] | None = None,
     ) -> Path:
         """
         Write the splitted dataset to files.
@@ -135,15 +207,16 @@ class DatasetMaker(Maker):
 
         Parameters
         ----------
+        output_file_name: str
+            Name of the file where the unique ordered dataset will be saved.
         ase_dataset: list[Atoms]
             List of ASE Atoms objects, i.e. the dataset.
         train_index_folds: list[list[int]]
             List of training indices for each fold.
         test_index_folds: list[list[int]]
             List of test indices for each fold.
-        pre_database_dir: str | None
-            Directory where the previous database was saved.
-            If None, the previous database will not be used.
+        init_data: Atoms | list[Atoms] | None
+            Initial dataset to be appended to the training dataset. If None, no initial data is appended.
         
         Returns
         -------
@@ -151,31 +224,17 @@ class DatasetMaker(Maker):
             List of directories where the splitted indeces of the dataset are saved.
         """
 
-        #Append previous training and testing datasets
-        #TODO: Handling pre_database_dir?
-        if pre_database_dir and os.path.exists(pre_database_dir):
+        #Append the whole initial dataset to the current training dataset
+        if init_data:
             #Get previous dataset for training
-            pre_data_train = read(
-                os.path.join(pre_database_dir, "train.extxyz"), index=":"
-            )
-            pre_train_index = np.arange(len(ase_dataset), len(ase_dataset) + len(pre_data_train))
-            ase_dataset += pre_data_train
-
-            #Get previous dataset for testing
-            pre_data_test = read(
-                os.path.join(pre_database_dir, "test.extxyz"), index=":"
-            )
-            pre_test_index = np.arange(len(ase_dataset), len(ase_dataset) + len(pre_data_test))
-            ase_dataset += pre_data_test
+            num_init_data = len(init_data)
+            init_train_index = np.arange(len(ase_dataset), len(ase_dataset) + num_init_data) #Append indices for initial dataset 
+            ase_dataset += init_data
 
             #Update indeces and structures datasets for each fold
             train_index_folds = [
-                np.concatenate((train_index, pre_train_index))
+                np.concatenate((train_index, init_train_index))
                 for train_index in train_index_folds
-            ]
-            test_index_folds = [
-                np.concatenate((test_index, pre_test_index))
-                for test_index in test_index_folds
             ]
         
         #Write unique ordered ase dataset
@@ -350,7 +409,6 @@ class DatasetMaker(Maker):
             test_folds.append(ts)
 
         return train_folds, test_folds
-
 
     def data_distillation(
             self,
