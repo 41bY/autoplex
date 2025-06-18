@@ -306,6 +306,43 @@ class MLIPStaticLabelling(Maker):
 
         return ase_calc
 
+def qe_params_from_config(config: dict):
+    """
+    Return QEstaticLabelling params from a configuration dictionary.
+
+    Args:
+        config (dict): Keys should match __init__ parameters. For example:
+            {
+                "qe_run_cmd": qe_run_cmd,
+                "num_qe_workers": num_qe_workers,
+                "fname_pwi_template": fname_pwi_template,
+                "kspace_resolution" : Kspace_resolution,
+                "koffset": Koffset,
+                "fname_structures": fname_structures,
+            }
+
+    Returns:
+        params: dict
+            Dictionary with parameters for QEstaticLabelling.
+    """
+    #Get default parameters
+    params = {
+        "qe_run_cmd": "pw.x",
+        "num_qe_workers": 1,
+        "fname_pwi_template": None,
+        "kspace_resolution" : None,
+        "koffset": [False, False, False],
+        "fname_structures": None,
+    }    
+
+    # Update parameters with values from the config file
+    if config is None: raise ValueError("Configuration file is empty or not properly formatted.")
+    params.update(config)
+
+    #Check a valid reference pwi path is provided
+    if not os.path.exists(params["fname_pwi_template"]): raise ValueError(f"Reference QE input file '{params['fname_pwi_template']}' not found.")
+
+    return params
 
 @dataclass
 class QEstaticLabelling(Maker):
@@ -330,7 +367,9 @@ class QEstaticLabelling(Maker):
     fname_pwi_template: str | None = None #Path to file containing the template computational parameters
     fname_structures: str | list[str] | None = None #Path or list[Path] to ASE-readible file containing the structures to be computed
     num_qe_workers: int | None = None #Number of workers to use for the calculations. 
-
+    kspace_resolution: float | None = None #K-space resolution in Angstrom^-1, used to set the K-points in the pwi file
+    koffset: list[bool] = field(default_factory=lambda: [False, False, False]) #K-points offset in the pwi file
+    
     def make(self):
         #Define jobs
         joblist = []
@@ -431,11 +470,9 @@ class QEstaticLabelling(Maker):
         # Modify lines with structure information: 
         # Assume ntyp, atom_types and pseudoptentials are already defined in the template and consistent with the structures
         # Assume ibrav=0 and Kspacing is already defined in the template
-        idx_nat_line, idx_kpoints_line, idx_pos_line, idx_cell_line = 0, 0, 0, 0
+        idx_nat_line, idx_pos_line, idx_cell_line = 0, 0, 0
         for i, line in enumerate(tmp_pwi_lines):
             if 'nat' in line: idx_nat_line = i
-            
-            elif 'K_POINTS' in line: idx_kpoints_line = i
 
             elif 'ATOMIC_POSITIONS' in line: idx_pos_line = i
 
@@ -446,25 +483,6 @@ class QEstaticLabelling(Maker):
             raise ValueError("Number of atoms line not defined in the template file. Please define \'nat =\' in the template file.")
         else:
             tmp_pwi_lines[idx_nat_line] = f'nat = \n'
-        
-        # Set K_points lines
-        # TODO: Set K_points lines based on the structure and K-spacing
-        if idx_kpoints_line == 0: # K_POINTS not defined, assume Gamma point
-            kpoints_lines = ["\nK_POINTS gamma\n"]
-
-        elif idx_kpoints_line > 0: # K_POINTS is defined, keep the line/s
-            if 'gamma' in tmp_pwi_lines[idx_kpoints_line] or 'Gamma' in tmp_pwi_lines[idx_kpoints_line]: # KPOINT is 1 line
-                kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+1]
-                del tmp_pwi_lines[idx_kpoints_line:]
-            elif 'automatic' in tmp_pwi_lines[idx_kpoints_line]: # KPOINTS is 2 lines
-                kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+2]
-                del tmp_pwi_lines[idx_kpoints_line:]
-            elif 'tpiba' in tmp_pwi_lines[idx_kpoints_line] or 'crystal' in tmp_pwi_lines[idx_kpoints_line]: #KPOINTS is multiple lines
-                num_ks = int(tmp_pwi_lines[idx_kpoints_line+1].split()[0]) #Get number of k-points
-                kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+num_ks+2] #Get k-points lines
-                del tmp_pwi_lines[idx_kpoints_line:]
-            else:
-                raise ValueError(f"K_POINTS format: {tmp_pwi_lines[idx_kpoints_line]} is unknown in pwi template file")
 
         # Cancel lines with ATOMIC_POSITIONS and CELL_PARAMETERS
         if idx_pos_line == 0 and idx_cell_line > 0:
@@ -478,9 +496,6 @@ class QEstaticLabelling(Maker):
         elif idx_pos_line > 0 and idx_cell_line > 0:
             idx_to_delete = min([idx_pos_line, idx_cell_line])
             del(tmp_pwi_lines[idx_to_delete:])
-        
-        # Build final template lines
-        tmp_pwi_lines = tmp_pwi_lines + kpoints_lines
 
         return tmp_pwi_lines
 
@@ -494,11 +509,12 @@ class QEstaticLabelling(Maker):
         Write the pwi input file for the given structure.
         """
         # Check pwi lines
-        idx_diskio, idx_outdir, idx_nat_line, nat = 0, 0, 0, len(structure)
+        idx_diskio, idx_outdir, idx_nat_line, idx_kpoints_line, nat = 0, 0, 0, 0, len(structure)
         for idx, line in enumerate(pwi_template):
             if 'nat =' in line: idx_nat_line = idx
             elif 'disk_io' in line: idx_diskio = idx
             elif 'outdir' in line: idx_outdir = idx
+            elif 'K_POINTS' in line: idx_kpoints_line = i
         
         #Update number of atoms
         pwi_template[idx_nat_line] = f'nat = {nat}\n'
@@ -516,6 +532,14 @@ class QEstaticLabelling(Maker):
             if idx_outdir == 0:
                 pwi_template.insert(idx_diskio + 1, f"outdir = 'OUT'\n")
 
+        kpoints_lines = self.set_Kpoints(
+            tmp_pwi_lines=pwi_template, 
+            idx_kpoints_line=idx_kpoints_line, 
+            atoms=structure,
+            Kspace_resolution=self.kspace_resolution,
+            Koffset=self.koffset,
+        )        
+
         #Write cell lines
         cell_lines = ["\nCELL_PARAMETERS (angstrom)\n"]
         cell_lines += [f"{structure.cell[i, 0]:.10f} {structure.cell[i, 1]:.10f} {structure.cell[i, 2]:.10f}\n" for i in range(3)]
@@ -527,12 +551,81 @@ class QEstaticLabelling(Maker):
 
         # Write the modified lines to the new pwi file
         with open(fname_pwi_output, 'w') as f:
-            for line in pwi_template:
+            for line in pwi_template: #Write reference pwi lines (computational parameters)
                 f.write(line)
-            for line in cell_lines:
+            for line in kpoints_lines: #Write K-points lines
                 f.write(line)
-            for line in pos_lines:
+            for line in cell_lines: #Write cell lines
                 f.write(line)
+            for line in pos_lines: #Write positions lines
+                f.write(line)
+
+    def set_Kpoints(self,
+            tmp_pwi_lines: list[str],
+            idx_kpoints_line: int,
+            atoms: Atoms,
+            Kspace_resolution: float | None = None,
+            Koffset: list[bool] = [False, False, False],
+        ):
+            """
+            Set the K-points in the pwi file based on user definition or K-space resolution.
+            """
+            # Define K-points lines
+            kpoints_lines = []
+            
+            # K_POINTS line not found
+            if idx_kpoints_line == 0:
+                if Kspace_resolution is None: # K_POINTS line not found and Kspace_resolution is not defined
+                    raise ValueError("K_POINTS line not found in the template file. Please define K_POINTS in the template file or provide Kspace_resolution.")
+                else: # Find k-points grid using Monkorst-Pack method based on K-space resolution
+                    #Get real space cell
+                    cell = atoms.cell
+                    
+                    #Find Kpoints grid
+                    #TODO: use structure_type info to generalize to non-periodic systems (3d, 2d, 1d, 0d)
+                    MP_mesh = self._compute_kpoints_grid(cell, Kspace_resolution)
+
+                    #Format k-points lines
+                    kpoints_lines.append(f"\nK_POINTS automatic\n") #Header for MP-grid
+                    Kpoint_line = f"{MP_mesh[0]} {MP_mesh[1]} {MP_mesh[2]}" #K-points grid line
+                    for offset in Koffset: #Add offset
+                        if offset: Kpoint_line += " 1"
+                        else: Kpoint_line += " 0"
+                    Kpoint_line += "\n"
+                    kpoints_lines.append(Kpoint_line)
+
+            # K_POINTS is defined by user in reference pwi file, keep the line/s
+            elif idx_kpoints_line > 0:
+                if 'gamma' in tmp_pwi_lines[idx_kpoints_line] or 'Gamma' in tmp_pwi_lines[idx_kpoints_line]: # KPOINT is 1 line
+                    kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+1]
+                    del tmp_pwi_lines[idx_kpoints_line:]
+                elif 'automatic' in tmp_pwi_lines[idx_kpoints_line]: # KPOINTS is 2 lines
+                    kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+2]
+                    del tmp_pwi_lines[idx_kpoints_line:]
+                elif 'tpiba' in tmp_pwi_lines[idx_kpoints_line] or 'crystal' in tmp_pwi_lines[idx_kpoints_line]: #KPOINTS is multiple lines
+                    num_ks = int(tmp_pwi_lines[idx_kpoints_line+1].split()[0]) #Get number of k-points
+                    kpoints_lines = tmp_pwi_lines[idx_kpoints_line:idx_kpoints_line+num_ks+2] #Get k-points lines
+                    del tmp_pwi_lines[idx_kpoints_line:]
+                else:
+                    raise ValueError(f"K_POINTS format: {tmp_pwi_lines[idx_kpoints_line]} is unknown in pwi template file")
+            
+            return kpoints_lines
+    
+    def _compute_kpoints_grid(self, cell, Kspace_resolution):
+        """
+        Compute the k-points grid using Monkhorst-Pack method based on the cell and K-space resolution.
+        """
+        #Compute the reciprocal cell vectors: b_i = 2π * (a_j x a_k) / (a_i . (a_j x a_k))
+        rec_cell = 2.0 * np.pi * np.linalg.inv(cell).T  
+
+        #Compute reciprocal lattice vecotors' lenghts
+        lengths = np.linalg.norm(rec_cell, axis=1)  
+
+        #Compute mesh size
+        mesh = [int(np.ceil(L / Kspace_resolution)) for L in lengths]  
+        print(f"Computed k-points mesh: {mesh} for K-space resolution: {Kspace_resolution} Angstrom^-1") #DEBUG
+
+        return mesh
 
     @job
     def run_qe_worker(
