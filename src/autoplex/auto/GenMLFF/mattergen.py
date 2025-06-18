@@ -34,6 +34,8 @@ class MatterGenMaker(Maker):
         Returns:
             Flow: A JobFlow that executes the MatterGen generation command.
         """
+        #Define joblist and outlist
+        joblist, outlist = [], []
 
         #Map config parameters to MatterGen's CLI arguments
         cli_cmds = self.config2cli(run_cmd)
@@ -41,11 +43,12 @@ class MatterGenMaker(Maker):
         #Run the MatterGen generation command
         extxyz_structures_path = self.run_mattergen(cli_cmds)
         extxyz_structures_path.name = "MatterGenGenerate"
+        joblist.append(extxyz_structures_path), outlist.append(extxyz_structures_path.output)
 
         #Return a list containing the path to the generated structures
         #TODO: Possibly multiple instances of MatterGenMaker as QE_workers
 
-        matgen_flow = Flow(jobs=[extxyz_structures_path], output=[extxyz_structures_path])
+        matgen_flow = Flow(jobs=joblist, output=outlist)
 
         return Response(replace=matgen_flow, output=matgen_flow.output)
     
@@ -85,7 +88,6 @@ class MatterGenMaker(Maker):
 
         #Run the commands
         cmd_line = ' '.join(cmd)
-        print(cmd_line)  #DEBUG: Print the command to be executed
         try:
             subprocess.run([cmd_line], shell=True, check=True, executable="/bin/bash")
         except subprocess.CalledProcessError as e:
