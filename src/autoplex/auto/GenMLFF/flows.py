@@ -43,9 +43,13 @@ def initial_iteration(
 
     # Initialize Single-point-calulation job
     if qe_params is not None:
-        # If QE parameters are provided, use QEscf for single-point calculations
-        qe_job = QEscf(**qe_params, fname_structures=generation_job.output)
+        #Update the QE parameters with the ensemble job output
+        qe_params['fname_structures'] = generation_job.output
+        
+        # Run QEscf for single-point calculations
+        qe_job = QEscf(qe_params)
         joblist.append(qe_job)
+        
         #Get output from the QE job
         scf_output = qe_job.output
     
@@ -60,7 +64,8 @@ def initial_iteration(
         raise ValueError("Either mlip_params or qe_params must be provided for single-point calculations.")
 
     # Initialize the DatasetEnsembler with the provided parameters and
-    dataset_job = dataset_ensembler(**dataset_params, labeled_output=scf_output)
+    dataset_params["labeled_output"] = scf_output
+    dataset_job = dataset_ensembler(dataset_params)
     joblist.append(dataset_job)
 
     # Initialize the MLIPEnsembleMaker with the provided parameters
@@ -93,6 +98,9 @@ def standard_iteration(
     qe_params: dict = field(default_factory=dict),
     dataset_params: dict = field(default_factory=dict),
     train_params: dict = field(default_factory=dict),
+    previous_dataset_path: str | None = None,
+    previous_mlip_paths: list[str] | None = None,
+    previous_mlip_errors: list[float] | None = None,
 ):
     """
     Build the standard iteration flow.
@@ -108,15 +116,21 @@ def standard_iteration(
     joblist.append(generation_job)
 
     #Initialize the RandomizedStructureMaker with the provided parameters
-    #TODO: Model paths inside ensemble_params should be initialized from the previous iteration
+    #Initialized ensemble_params from the previous iteration
+    ensemble_params['mlip_paths'] = previous_mlip_paths
+    ensemble_params['mlip_errors'] = previous_mlip_errors   
     ensemble_job = evaluate_mlip_ensemble(**ensemble_params, structure_paths=generation_job.output)
     joblist.append(ensemble_job)
 
     # Initialize Single-point-calulation job
     if qe_params is not None:
-        # If QE parameters are provided, use QEscf for single-point calculations
-        qe_job = QEscf(**qe_params, fname_structures=ensemble_job.output)
+        #Update the QE parameters with the ensemble job output
+        qe_params['fname_structures'] = ensemble_job.output
+        
+        # Run QEscf for single-point calculations
+        qe_job = QEscf(qe_params)
         joblist.append(qe_job)
+
         #Get output from the QE job
         scf_output = qe_job.output
     
@@ -130,8 +144,10 @@ def standard_iteration(
     else:
         raise ValueError("Either mlip_params or qe_params must be provided for single-point calculations.")
 
-    # Initialize the DatasetEnsembler with the provided parameters and
-    dataset_job = dataset_ensembler(**dataset_params, labeled_output=scf_output)
+    # Initialize the DatasetEnsembler with the provided parameters and from the previous iteration
+    dataset_params["labeled_output"] = scf_output
+    dataset_params["pre_database_dir"] = previous_dataset_path
+    dataset_job = dataset_ensembler(dataset_params)
     joblist.append(dataset_job)
 
     # Initialize the MLIPEnsembleMaker with the provided parameters
@@ -203,10 +219,6 @@ def GenMLFlow(
 
     #Loop over the number of requested iterations
     for i in range(GenML_params.get("num_iterations", 1)):
-        #Get ensemble MLIP
-        ensemble_params['mlip_paths'] = previous_iteration.output['training_output']['mlip_paths']
-        ensemble_params['mlip_errors'] = previous_iteration.output['training_output']['train_errors']
-
         #Add the standard iteration job for each iteration
         current_iteration = standard_iteration(
             rss_params=rss_params,
@@ -216,6 +228,9 @@ def GenMLFlow(
             qe_params=qe_params,
             dataset_params=dataset_params,
             train_params=train_params,
+            previous_dataset_path=previous_iteration.output['dataset_output'],
+            previous_mlip_paths=previous_iteration.output['training_output']['mlip_paths'],
+            previous_mlip_errors=previous_iteration.output['training_output']['train_errors'],
         )
         current_iteration.name = f"standard_iteration_{i+1}"
         joblist.append(current_iteration)
