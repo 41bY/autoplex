@@ -1,17 +1,28 @@
 #Number of iterations for the GenML workflow
 num_iterations: 1
 
-#Parameters for Random Structure Search (RSS) using Buildcell
-rss_params:
-  "tag": "C" #Tag of systems. It can also be used for setting up elements and stoichiometry.
-  "generated_struct_numbers": [6, 6] #Expected number of generated randomized unit cells for each run
-  "buildcell_options": [ #Buildcell params for each buildcell run
-      {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{6,8,10,12,14,16,18,20,22,24}'}, 
-      {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{7,9,11,13,15,17,19,21,23}'},
-  ]
-  "remove_tmp_files": True #Remove all temporary files raised by buildcell to save memory
-  "num_processes": 1 #Number of processes to use for parallel computation
-  # "fragment_file": None #Fragment(s) for random structures, e.g. molecules, to be placed indivudally intact.
+#Parameters for MatterGen generate
+mattergen_params:
+  results_path: MyResults
+  "model_path": /leonardo_scratch/fast/EUHPC_A04_113/Alberto/GenModels/MatterGen/MatterGen_models/chemical_system_and_hull
+  "batch_size": 4
+  "num_batches": 2
+  "record_trajectories": False
+  "properties_to_condition_on": "{'chemical_system' : 'C'}"
+  "diffusion_guidance_factor": 0.1
+
+
+# #Parameters for Random Structure Search (RSS) using Buildcell
+# rss_params:
+#   "tag": "C" #Tag of systems. It can also be used for setting up elements and stoichiometry.
+#   "generated_struct_numbers": [6, 6] #Expected number of generated randomized unit cells for each run
+#   "buildcell_options": [ #Buildcell params for each buildcell run
+#       {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{6,8,10,12,14,16,18,20,22,24}'}, 
+#       {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{7,9,11,13,15,17,19,21,23}'},
+#   ]
+#   "remove_tmp_files": True #Remove all temporary files raised by buildcell to save memory
+#   "num_processes": 1 #Number of processes to use for parallel computation
+#   # "fragment_file": None #Fragment(s) for random structures, e.g. molecules, to be placed indivudally intact.
 
 #Parameters for the ensemble evaluator
 ensemble_params:
@@ -33,6 +44,8 @@ qe_params:
   "qe_run_cmd": "mpirun -np 1 pw.x"
   "num_qe_workers": 2 #Number of workers to use for the calculations. If None setp up 1 worker per scf
   "fname_pwi_template": "/leonardo_work/EUHPC_A04_113/Alberto/GenMLFF-progect/Test-workflow/rss-mlip/reference.pwi" #Path to file containing the template QE input
+  "kspace_resolution": 0.3 #K-space resolution for the QE calculations in Å^-1
+  "koffset": [False, False, False] #K-point offset for the QE calculations
 
 # #Parameters for MLIP scf runs
 # mlip_params:
@@ -46,6 +59,7 @@ qe_params:
 #Parameters for dataset ensembler
 dataset_params:
   "pre_database_dir" : None
+  "init_database_dir" : None
   "num_models": 4
   "test_ratio": 0.05
   "distill_force_max": 20.0 #eV/Å
