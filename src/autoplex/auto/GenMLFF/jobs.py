@@ -7,6 +7,7 @@ from autoplex.auto.GenMLFF.labelling import MLIPStaticLabelling, QEstaticLabelli
 from autoplex.auto.GenMLFF.dataset import DatasetMaker
 from autoplex.auto.GenMLFF.training import MLIPEnsembleMaker
 from autoplex.auto.GenMLFF.sampling import EnsembleEvaluatorMaker
+from autoplex.auto.GenMLFF.mattergen import MatterGenMaker, params_from_config
 
 
 @job
@@ -139,6 +140,25 @@ def RSS(
 
     return randomized_structures_paths
 
+@job
+def MatterGen(
+    params: dict | None = None,
+):
+    """
+    Initialize the MatterGenMaker with the provided parameters.
+
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the MatterGenMaker.
+    """
+    #Initialize MatterGenMaker with the provided parameters
+    matgen_params = params_from_config(params)
+
+    # Execute MatterGen generation
+    generated_structure_paths = MatterGenMaker(**matgen_params).make()
+
+    return generated_structure_paths
 
 @job
 def MLscf(

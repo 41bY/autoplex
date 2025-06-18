@@ -4,6 +4,7 @@ from dataclasses import field
 from jobflow import Flow, job, Response
 from autoplex.auto.GenMLFF.jobs import (
     RSS,
+    MatterGen,
     evaluate_mlip_ensemble,
     MLscf,
     QEscf,
@@ -21,6 +22,7 @@ logging.basicConfig(
 def initial_iteration(
     name: str = "initial_iteration",
     rss_params: dict = field(default_factory=dict),
+    mattergen_params: dict = field(default_factory=dict),
     mlip_params: dict = field(default_factory=dict),
     qe_params: dict = field(default_factory=dict),
     dataset_params: dict = field(default_factory=dict),
@@ -32,21 +34,24 @@ def initial_iteration(
     #Define joblist
     joblist = []
 
-    #Initialize the RandomizedStructureMaker with the provided parameters
-    rss_job = RSS(**rss_params)
-    joblist.append(rss_job)
+    #Initialize the provided structure generation job
+    if rss_params is not None: # Use RandomSearchStructure for structure generation
+        generation_job = RSS(**rss_params)
+    elif mattergen_params is not None: # Use MatterGen for structure generation
+        generation_job = MatterGen(mattergen_params)
+    joblist.append(generation_job)
 
     # Initialize Single-point-calulation job
     if qe_params is not None:
         # If QE parameters are provided, use QEscf for single-point calculations
-        qe_job = QEscf(**qe_params, fname_structures=rss_job.output)
+        qe_job = QEscf(**qe_params, fname_structures=generation_job.output)
         joblist.append(qe_job)
         #Get output from the QE job
         scf_output = qe_job.output
     
     elif mlip_params is not None:
         # If MLIP parameters are provided, use MLscf for single-point calculations
-        mlip_job = MLscf(**mlip_params, structure_paths=rss_job.output)
+        mlip_job = MLscf(**mlip_params, structure_paths=generation_job.output)
         joblist.append(mlip_job)
         #Get output from the MLIP job
         scf_output = mlip_job.output
@@ -67,7 +72,7 @@ def initial_iteration(
         jobs=joblist, 
         name=name, 
         output={
-            "rss_output": rss_job.output,
+            "generation_output": generation_job.output,
             "scf_output": scf_output,
             "dataset_output": dataset_job.output,
             "training_output": mlip_ensemble_job.output,
@@ -82,6 +87,7 @@ def initial_iteration(
 def standard_iteration(
     name: str = "standard_iteration",
     rss_params: dict = field(default_factory=dict),
+    mattergen_params: dict = field(default_factory=dict),
     ensemble_params: dict = field(default_factory=dict),
     mlip_params: dict = field(default_factory=dict),
     qe_params: dict = field(default_factory=dict),
@@ -94,13 +100,16 @@ def standard_iteration(
     #Define joblist
     joblist = []
 
-    #Initialize the RandomSearchStructure with the provided parameters
-    rss_job = RSS(**rss_params)
-    joblist.append(rss_job)
+    #Initialize the provided structure generation job
+    if rss_params is not None: # Use RandomSearchStructure for structure generation
+        generation_job = RSS(**rss_params)
+    elif mattergen_params is not None: # Use MatterGen for structure generation
+        generation_job = MatterGen(mattergen_params)
+    joblist.append(generation_job)
 
     #Initialize the RandomizedStructureMaker with the provided parameters
     #TODO: Model paths inside ensemble_params should be initialized from the previous iteration
-    ensemble_job = evaluate_mlip_ensemble(**ensemble_params, structure_paths=rss_job.output)
+    ensemble_job = evaluate_mlip_ensemble(**ensemble_params, structure_paths=generation_job.output)
     joblist.append(ensemble_job)
 
     # Initialize Single-point-calulation job
@@ -134,7 +143,7 @@ def standard_iteration(
         jobs=joblist, 
         name=name, 
         output={
-            "rss_output": rss_job.output,
+            "rss_output": generation_job.output,
             "scf_output": scf_output,
             "dataset_output": dataset_job.output,
             "training_output": mlip_ensemble_job.output,
@@ -163,6 +172,7 @@ def GenMLFlow(
 
     #Unpack the parameters
     rss_params = GenML_params.get("rss_params", None)
+    mattergen_params = GenML_params.get("mattergen_params", None)
     ensemble_params = GenML_params.get("ensemble_params", None)
     mlip_params = GenML_params.get("mlip_params", None)
     qe_params = GenML_params.get("qe_params", None)
@@ -170,7 +180,7 @@ def GenMLFlow(
     train_params = GenML_params.get("train_params", None)
 
     #Assertions for required parameters
-    assert rss_params is not None, "rss_params must be provided"
+    assert rss_params is not None or mattergen_params is not None, "rss_params or mattergen_params must be provided"
     assert ensemble_params is not None, "ensemble_params must be provided"
     assert mlip_params is not None or qe_params is not None, "mlip_params or qe_params must be provided"
     assert dataset_params is not None, "dataset_params must be provided"
@@ -183,6 +193,7 @@ def GenMLFlow(
     #Add the initial iteration job
     previous_iteration = initial_iteration(
         rss_params=rss_params,
+        mattergen_params=mattergen_params,
         mlip_params=mlip_params,
         qe_params=qe_params,
         dataset_params=dataset_params,
@@ -199,6 +210,7 @@ def GenMLFlow(
         #Add the standard iteration job for each iteration
         current_iteration = standard_iteration(
             rss_params=rss_params,
+            mattergen_params=mattergen_params,
             ensemble_params=ensemble_params,
             mlip_params=mlip_params,
             qe_params=qe_params,
