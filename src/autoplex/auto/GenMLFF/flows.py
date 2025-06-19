@@ -1,3 +1,4 @@
+import os
 import yaml
 import logging
 from dataclasses import field
@@ -10,6 +11,7 @@ from autoplex.auto.GenMLFF.jobs import (
     QEscf,
     dataset_ensembler,
     fit_mlip_ensemble,
+    write_restart,
 )
 
 #Set logger
@@ -202,23 +204,61 @@ def GenMLFlow(
     assert dataset_params is not None, "dataset_params must be provided"
     assert train_params is not None, "train_params must be provided"
 
+    #Read restart file
+    restart_params, restart_fname = {}, os.path.dirname(input_fname) + "/GenMLFF_restart.yaml"
+    if os.path.exists(restart_fname):
+        logging.info(f"Found restart file {restart_fname}, reading restart parameters...")
+
+        #Read restart file, contains:
+        # "iteration" : 0,  # The previous iteration index
+        # "dataset_output" : "previous_dataset_path"
+        # "mlip_paths" : ["previous_mlip_path1", "previous_mlip_path2", ...]
+        # "mlip_errors" : [0.01, 0.02, ...]
+        with open(restart_fname, 'r') as f:
+            restart_params = yaml.safe_load(f)
 
     #Define joblist
     joblist = []
 
-    #Add the initial iteration job
-    previous_iteration = initial_iteration(
-        rss_params=rss_params,
-        mattergen_params=mattergen_params,
-        mlip_params=mlip_params,
-        qe_params=qe_params,
-        dataset_params=dataset_params,
-        train_params=train_params,
-    )
-    joblist.append(previous_iteration)
+    #If restart parameters are provided, use them to initialize the previous iteration
+    if restart_params:
+        logging.info(f"Restarting from iteration {restart_params['iteration']}")
+        previous_iteration = standard_iteration(
+            rss_params=rss_params,
+            mattergen_params=mattergen_params,
+            ensemble_params=ensemble_params,
+            mlip_params=mlip_params,
+            qe_params=qe_params,
+            dataset_params=dataset_params,
+            train_params=train_params,
+            previous_dataset_path=restart_params.get('dataset_output'),
+            previous_mlip_paths=restart_params.get('mlip_paths'),
+            previous_mlip_errors=restart_params.get('mlip_errors'),
+        )
+        previous_iteration.name = f"standard_iteration_{restart_params['iteration'] + 1}"
+        joblist.append(previous_iteration)
+    
+    else:
+        logging.info(f"Starting GenMLFF workflow from scratch, setting up iteration 0")
+        #Add the initial iteration job
+        previous_iteration = initial_iteration(
+            rss_params=rss_params,
+            mattergen_params=mattergen_params,
+            mlip_params=mlip_params,
+            qe_params=qe_params,
+            dataset_params=dataset_params,
+            train_params=train_params,
+        )
+        joblist.append(previous_iteration)
+
+    #Get the number of remaining iterations
+    num_remaining_iterations = GenML_params.get("num_iterations", 1) - 1
+
+    #Get current iteration number
+    current_iteration_id = restart_params.get('iteration') + 1 if restart_params else 1
 
     #Loop over the number of requested iterations
-    for i in range(GenML_params.get("num_iterations", 1)):
+    for i in range(current_iteration_id, current_iteration_id + num_remaining_iterations):
         #Add the standard iteration job for each iteration
         current_iteration = standard_iteration(
             rss_params=rss_params,
@@ -232,11 +272,21 @@ def GenMLFlow(
             previous_mlip_paths=previous_iteration.output['training_output']['mlip_paths'],
             previous_mlip_errors=previous_iteration.output['training_output']['train_errors'],
         )
-        current_iteration.name = f"standard_iteration_{i+1}"
+        current_iteration.name = f"standard_iteration_{i}"
         joblist.append(current_iteration)
 
         #Update the previous iteration to the current one
         previous_iteration = current_iteration
+    
+    #Define write_restart job
+    write_restart_job = write_restart(
+        restart_fname=restart_fname,
+        current_iteration_id=int(current_iteration_id + num_remaining_iterations),
+        final_dataset_path=previous_iteration.output['dataset_output'],
+        final_mlip_paths=previous_iteration.output['training_output']['mlip_paths'],
+        final_mlip_errs=previous_iteration.output['training_output']['train_errors'],
+    )
+    joblist.append(write_restart_job)
 
     #Create a Flow object to manage the jobs
     flow = Flow(jobs=joblist, name=name)

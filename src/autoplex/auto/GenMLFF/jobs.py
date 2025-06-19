@@ -1,5 +1,6 @@
 """Jobs for running the workflow."""
 
+import yaml
 from dataclasses import field
 from jobflow import job, Flow, Response
 from autoplex.auto.GenMLFF.rss import RandomizedStructureMaker
@@ -327,3 +328,45 @@ def evaluate_mlip_ensemble(
     evaluated_structures_path = EnsembleEvaluatorMaker(**ensemble_evaluator_params).make()
 
     return evaluated_structures_path
+
+
+        # "iteration" : 0,  # The previous iteration index
+        # "dataset_output" : "previous_dataset_path"
+        # "mlip_paths" : ["previous_mlip_path1", "previous_mlip_path2", ...]
+        # "mlip_errors" : [0.01, 0.02, ...]
+
+
+@job
+def write_restart(
+    name: str = "do_write_restart",
+    restart_fname: str | None = None,
+    current_iteration_id: int | None = None,
+    final_dataset_path: str | None = None,
+    final_mlip_paths: list[str] | None = None,
+    final_mlip_errs: list[float] | None = None,
+):
+    """
+    Write the restart file for the GenMLFF workflow.
+
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the restart.
+    """
+    #Assert that every argument is provided
+    if restart_fname is None or current_iteration_id is None or final_dataset_path is None or final_mlip_paths is None or final_mlip_errs is None:
+        raise ValueError("All parameters must be provided to write a valid restart file.")
+    
+    #Dump restart parameters into a dictionary
+    restart_params = {
+        "iteration": current_iteration_id,
+        "dataset_output": final_dataset_path,
+        "mlip_paths": final_mlip_paths,
+        "mlip_errors": final_mlip_errs,
+    }
+
+    #Write the restart file in .yaml format
+    with open(restart_fname, 'w') as restart_file:
+        yaml.dump(restart_params, restart_file, default_flow_style=False)
+
+    return restart_fname
