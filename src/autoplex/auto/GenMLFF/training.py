@@ -232,10 +232,8 @@ class MLIPEnsembleMaker(Maker):
                 "The current version ONLY supports the following models: MACE."
             )
 
-        # Substitute default hyperparameters with user-defined ones
-        for key, value in usr_hypers.items():
-            if key in hypers.keys():
-                hypers[key] = value
+        # # Substitute default hyperparameters with user-defined ones
+        hypers.update(usr_hypers)
 
         #Set name of the model
         hypers["name"] = "MACE"               
