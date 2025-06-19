@@ -1,6 +1,7 @@
 """Jobs to create training data for ML potentials."""
 import os
 import logging
+from glob import glob
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -26,6 +27,7 @@ def data_ensembler_from_config(config: dict):
             "force_label": force_label,
             "energy_label": energy_label,
             "output_file_name": output_file_name,
+            "scf_code": scf_code,
             "pre_database_dir": pre_database_dir,
             "init_database_dir": init_database_dir,
             "isolated_atom_energies": isolated_atom_energies
@@ -39,6 +41,7 @@ def data_ensembler_from_config(config: dict):
     #Collect parameters for DatasetMaker
     params = {
         "labeled_output": None,
+        "scf_code": "QE",  # SCF code used for calculations, e.g., "QE" or "VASP"
         "num_models": 1,
         "test_ratio": 0.05,
         "distill_force_max": 30.0,
@@ -87,6 +90,7 @@ class DatasetMaker(Maker):
     """
     name: str = "do_dataset_preparation"
     labeled_output: str | list | None = None
+    scf_code: str = "QE"  # SCF code used for calculations, e.g., "QE" or "VASP"
     num_models: int = 1
     test_ratio: float = 0.1
     distill_force_max: float | None = None
@@ -107,30 +111,10 @@ class DatasetMaker(Maker):
             The current working directory.
         """
         #Collect labeled data from current iteration
-        if isinstance(self.labeled_output, str): #Assume MLIP-type output
-            raw_atoms = read(self.labeled_output, index=":")
-        
-        elif isinstance(self.labeled_output, list): #Assume DFT-type output
-            
-            #Get dft output files
-            dft_output_files = []
-            for labeled_output in self.labeled_output: #Output from each DFT worker
-                if 'pwo' in labeled_output.keys() and 'success' in labeled_output.keys():
-                    for success, pwo in zip(labeled_output['success'], labeled_output['pwo']):
-                        if success:
-                            dft_output_files.append(pwo)
-                else: raise ValueError("The labeled_output should be a list of dictionaries with 'pwo' and 'success' keys.")
-            
-            #Read all DFT output files
-            raw_atoms = []
-            for dft_output_file in dft_output_files:
-                try:
-                    raw_atoms += [read(dft_output_file)]
-                except Exception as e:
-                    logging.error(f"Error reading {dft_output_file}: {e}")
-            
-        else:
-            raise ValueError("The labeled_output should be a string or a list of dicts.")
+        raw_atoms = self.load_labeled_data(
+            labeled_outputs=self.labeled_output, 
+            scf_code=self.scf_code
+        )
         
         #Check if the labeled data is empty
         if not raw_atoms:
@@ -192,6 +176,87 @@ class DatasetMaker(Maker):
         
         #Return the list of directories where the splitted indeces of the dataset are saved
         return unique_dataset_path
+
+    def load_labeled_data(self, labeled_outputs: str | list[str], scf_code="QE") -> list[Atoms]:
+        """
+        Load labeled data from the provided file or list of files.
+
+        Parameters
+        ----------
+        labeled_output: str | list[str]
+            Path to the file containing the DFT calculations data or a list of such paths.
+        scf_code: str
+            The code used for the SCF calculations (e.g., "QE", "VASP", etc.).
+        Returns
+        -------
+        raw_atoms: list[Atoms]
+            List of ASE Atoms objects loaded from the labeled output.
+        """
+        if isinstance(labeled_outputs, str):
+            #Check file exists
+            if not os.path.exists(labeled_outputs):
+                raise FileNotFoundError(f"The labeled output file {labeled_outputs} does not exist.")
+            raw_atoms = read(labeled_outputs, index=":")
+
+        elif isinstance(labeled_outputs, list):
+            # Safe-search for labeled output file
+            # Get every file in the same parent folder as the labeled_outputs
+            output_files = []
+            for labeled_output in labeled_outputs:
+                try:
+                    output_files += [pwo for success, pwo in zip(labeled_output['success'], labeled_output['pwo']) if success]
+                except:
+                    logging.error(f"Error in reading of labeled output: {labeled_output}, skipping it.")
+            
+            #Build unique output folders
+            output_folders = set([os.path.dirname(file) for file in output_files])
+
+            #Load code-dependent labeled outputs
+            raw_atoms = self._load_code_specific_scf_output(output_folders, scf_code)
+        
+        return raw_atoms
+    
+    def _load_code_specific_scf_output(self, output_folders: set[str], scf_code: str) -> list[Atoms]:
+        """
+        Load SCF output files from the provided folders based on the SCF code.
+
+        Parameters
+        ----------
+        output_folders: set[str]
+            Set of folders containing the SCF output files.
+        scf_code: str
+            The code used for the SCF calculations (e.g., "QE", "VASP", etc.).
+
+        Returns
+        -------
+        raw_atoms: list[Atoms]
+            List of ASE Atoms objects loaded from the SCF output files.
+        """
+        #Get correct extension for the SCF code
+        if scf_code == "QE":
+            scf_extension = "*.pwo"
+            ase_format = "espresso-out"
+        elif scf_code == "VASP":
+            scf_extension = "OUTCAR"
+            ase_format = "vasp-out"
+        else:
+            raise ValueError(f"Unsupported SCF code: {scf_code}. Supported are QE | VASP. Please implement loading for this code.")
+
+        #Get all SCF output files in the provided folders
+        output_files = []
+        for folder in output_folders:
+            # Use glob to find all files matching the SCF extension
+            output_files += glob(f"{folder}/{scf_extension}")
+
+        #Read all SCF output files and return the raw atoms with labels
+        raw_atoms = []
+        for output_file in output_files:
+            try:
+                raw_atoms += read(output_file, index=":", format=ase_format)
+            except Exception as e:
+                logging.error(f"Skipping {output_file} due to error: {e}")
+        
+        return raw_atoms
 
     # TODO: Check 'regularization': what is it and how to use it?
     def write_splitted_dataset(self,
