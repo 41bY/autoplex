@@ -105,7 +105,7 @@ class MLIPEnsembleMaker(Maker):
             )
         
             #Write mace_input file
-            train_input_fname = self.write_mlip_input(
+            train_input_fname, fine_tune_hypers = self.write_mlip_input(
                 outdir=model_dataset_dir,
                 mlip_type=self.mlip_type,
                 usr_hypers=self.mlip_train_kwargs,
@@ -117,8 +117,7 @@ class MLIPEnsembleMaker(Maker):
             mlip_train_job = self.mlip_training(
                 input_fname=train_input_fname,
                 type=self.mlip_type,
-                train_data_path=train_fname,
-                test_data_path=test_fname,
+                multihead_finetuning=fine_tune_hypers
                 )
 
             # Append training job to the list of jobs and outputs job to the output dictionary
@@ -190,7 +189,7 @@ class MLIPEnsembleMaker(Maker):
         """
         if mlip_type == "MACE":
             # Define default hyperparameters
-            hypers = {
+            train_hypers = {
                 "name": "MACE",
                 "model": "MACE",
                 "r_max": 6.0,
@@ -225,39 +224,70 @@ class MLIPEnsembleMaker(Maker):
                 "enable_cueq": True,
                 "restart_latest": True,
             }
+
+            fine_tune_hypers = {
+                "multiheads_finetuning": False, #Assume no multi-heads fine-tuning
+                "foundation_model": None,
+                "pt_train_file": None,
+                "configs_ft": None,
+                "atomic_numbers": None,
+                "num_samples_pt": 10000,
+                "filter_type_pt": "exclusive",
+                "subselect_pt": "fps",
+                "weight_pt": 1.0,
+                "weight_ft": 10.0,
+                "force_mh_ft_lr": True
+            }
         
         else:
             raise ValueError(
                 "Please correct the MLIP name!"
                 "The current version ONLY supports the following models: MACE."
             )
+        
+        # Get user defined fine-tuning hyperparameters
+        usr_finetune_hypers = {k: v for k, v in usr_hypers.items() if k in fine_tune_hypers.keys()}
 
-        # # Substitute default hyperparameters with user-defined ones
-        hypers.update(usr_hypers)
+        # Get user defined training hyperparameters
+        usr_train_hypers = {k: v for k, v in usr_hypers.items() if k not in fine_tune_hypers.keys()}
+
+        # Update default hyperparameters with user-defined ones
+        train_hypers.update(usr_train_hypers), fine_tune_hypers.update(usr_finetune_hypers)
 
         #Set name of the model
-        hypers["name"] = "MACE"               
+        train_hypers["name"] = "MACE"               
         
         #Set training and test data files
-        hypers["train_file"], hypers["valid_file"] = train_fname, test_fname
+        train_hypers["train_file"], train_hypers["valid_file"] = train_fname, test_fname
 
-        #Set output file name
-        out_fname = os.path.join(outdir, "input.yaml")
+        #Pre-data selection if multi-heads fine-tuning is used
+        if fine_tune_hypers["multiheads_finetuning"]:
+            #Add path to pt sampled configurations
+            train_hypers["pt_train_file"] = "selected_pt_configs.xyz"
+            #Add path to target training dataset
+            fine_tune_hypers["configs_ft"] = train_hypers["train_file"] 
 
-        #Write hyperparameters to file
-        with open(out_fname, "w") as f:
-            yaml.safe_dump(hypers, f, sort_keys=False)
-        logging.info(f"Written {mlip_type} input file to: {out_fname}")
+        #General fine-tuning hyperparameters
+        if fine_tune_hypers["foundation_model"] is not None:
+            train_hypers["foundation_model"] = fine_tune_hypers["foundation_model"]
+            train_hypers["force_mh_ft_lr"] = fine_tune_hypers["force_mh_ft_lr"]
+
+        #Set training input file name
+        train_fname = os.path.join(outdir, "input.yaml")
+
+        #Write hyperparameters to training input file
+        with open(train_fname, "w") as f:
+            yaml.safe_dump(train_hypers, f, sort_keys=False)
+        logging.info(f"Written {mlip_type} input file to: {train_fname}")
 
         #Return path to written input file
-        return out_fname
+        return train_fname, fine_tune_hypers
     
     @job
     def mlip_training(self,
         input_fname: str,
         type: str,
-        train_data_path: str,
-        test_data_path: str,
+        multihead_finetuning: dict,
     ):
         """
         Job for fitting potential(s).
@@ -306,9 +336,13 @@ class MLIPEnsembleMaker(Maker):
         fit_kwargs: dict
             Additional keyword arguments for MLIP fitting.
         """
-        if isinstance(input_fname, str):  # data_prep_job.output is returned as string
-            input_fname = Path(input_fname)
+        # Check if multi-head fine-tuning is enabled
+        if multihead_finetuning["multiheads_finetuning"]:
+            # If multi-head fine-tuning is enabled, we need to sample the pre-trained configurations
+            # and write them to the train file
+            self.sample_pt_configs(multihead_finetuning)
 
+        # Run MACE training (scratch, fine-tuning, multi-head fine-tuning)
         if type == "MACE":
             mlip_train_output = self.run_mace(input_fname)
         else:
@@ -319,6 +353,49 @@ class MLIPEnsembleMaker(Maker):
 
         return mlip_train_output
 
+    def sample_pt_configs(self, multihead_finetuning: dict) -> str:
+        """
+        Sample pre-trained configurations for multi-head fine-tuning.
+
+        Parameters
+        ----------
+        input_fname: str
+            Path to the MACE training input file.
+        multihead_finetuning: dict
+            Dictionary containing hyperparameters for multi-head fine-tuning.
+        
+        Returns
+        -------
+        str
+            Path to the sampled pre-trained configurations file.
+        """
+        # Get fname of sampled pre-trained configurations
+        pt_sampled_fname = "selected_pt_configs.xyz"
+
+        # Get MACE pt sampling command
+        cmd = f"""python -m mace.cli.fine_tuning_select {
+            f"--configs_pt {multihead_finetuning['pt_train_file']} "
+            f"--configs_ft {multihead_finetuning['configs_ft']} "
+            f"--num_samples {multihead_finetuning['num_samples_pt']} "
+            f"--subselect {multihead_finetuning['subselect_pt']} "
+            f"--model {multihead_finetuning['foundation_model']} "
+            f"--filtering_type {multihead_finetuning['filter_type_pt']} "
+            f"--weight_pt {multihead_finetuning['weight_pt']} "
+            f"--weight_ft {multihead_finetuning['weight_ft']} "
+            f"--output {pt_sampled_fname} "            
+            f"--head_pt pt_head "
+            f"--head_ft target_head "            
+        }"""
+
+        # Launch sampling of pre-trained configuration
+        with (
+            open("mace_sample_pt.log", "w", encoding="utf-8") as file_std,
+            open("mace_sample_pt.log", "w", encoding="utf-8") as file_err,
+        ):
+            subprocess.run(cmd, stdout=file_std, stderr=file_err, shell=True)        
+
+        # Sample pre-trained configurations using MACE fitting utility
+        return pt_sampled_fname
 
     def run_mace(self, fname_input) -> dict:
         """
