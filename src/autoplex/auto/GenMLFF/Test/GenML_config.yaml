@@ -1,20 +1,20 @@
 #Number of iterations for the GenML workflow
-num_iterations: 1
+num_iterations: 2
 
-#Parameters for MatterGen generate
+#Parameters for MatterGen generate (use MatterGen or RSS to generate structures)
 mattergen_params:
-  results_path: MyResults
+  results_path: MatGenStructures
   "model_path": /leonardo_scratch/fast/EUHPC_A04_113/Alberto/GenModels/MatterGen/MatterGen_models/chemical_system_and_hull
-  "batch_size": 4
+  "batch_size": 5
   "num_batches": 2
   "record_trajectories": False
-  "properties_to_condition_on": "{'chemical_system' : 'C'}"
-  "diffusion_guidance_factor": 0.1
+  "properties_to_condition_on": "{'chemical_system' : 'C-O', 'energy_above_hull' : 0.05}"
+  "diffusion_guidance_factor": 2.0
 
 
-# #Parameters for Random Structure Search (RSS) using Buildcell
+# #Parameters for Random Structure Search (RSS) using Buildcell (use RSS or MatterGen to generate structures)
 # rss_params:
-#   "tag": "C" #Tag of systems. It can also be used for setting up elements and stoichiometry.
+#   "tag": "CO" #Tag of systems. It can also be used for setting up elements and stoichiometry.
 #   "generated_struct_numbers": [6, 6] #Expected number of generated randomized unit cells for each run
 #   "buildcell_options": [ #Buildcell params for each buildcell run
 #       {"NFORM": '1', "SYMMOPS": "1-4", "SLACK": 0.25, "OVERLAP" : 0.1, "NATOM" : '{6,8,10,12,14,16,18,20,22,24}'}, 
@@ -33,13 +33,13 @@ ensemble_params:
       "device" : "cuda", 
       "default_dtype" : "float32",
       }
-  "pre_trained_model": "/leonardo_work/EUHPC_A04_113/Alberto/mace/pre-trained-models/mace-mpa-0-medium.model"
+  "pre_trained_model": "/leonardo_work/EUHPC_A04_113/Alberto/GenMLFF-progect/Test-workflow/MACE_models_and_data/MACE-matpes-pbe-omat-ft.model"
   "pre_trained_kwargs": {
       "device" : "cuda", 
       "default_dtype" : "float32",
   }
 
-#Parameters for QuantumEspresso scf runs
+#Parameters for QuantumEspresso scf runs (Use QuantumEspresso or MLIP to run scf calculations)
 qe_params:
   "qe_run_cmd": "mpirun -np 1 pw.x"
   "num_qe_workers": 2 #Number of workers to use for the calculations. If None setp up 1 worker per scf
@@ -47,7 +47,7 @@ qe_params:
   "kspace_resolution": 0.3 #K-space resolution for the QE calculations in Å^-1
   "koffset": [False, False, False] #K-point offset for the QE calculations
 
-# #Parameters for MLIP scf runs
+# #Parameters for MLIP scf runs (Use QuantumEspresso or MLIP to run scf calculations)
 # mlip_params:
 #   "mlip_type": "MACE" #Type of MLIP to be used
 #   "mlip_kwargs": {
@@ -56,26 +56,41 @@ qe_params:
 #   }
 #   "dimer" : True
 
-#Parameters for dataset ensembler
+#Parameters for specifying dataset composition for model ensemble
 dataset_params:
   "pre_database_dir" : None
   "init_database_dir" : None
   "num_models": 4
   "test_ratio": 0.05
   "distill_force_max": 20.0 #eV/Å
+  "scf_code": "QE" #Code to use for the scf calculations, e.g. "QE" or "VASP"
 
 
-#Parameters for ensemble training
-#Define parameters for ensemble training
+#Parameters for the training/fine-tuning of models in the ensemble 
 train_params:
     "num_models": 4
     "remove_model_datasets": True
     "mlip_type": "MACE"
     "mlip_train_kwargs": {
+        ###Naive fine-tuning if ONLY foundation model is provided
+        # "foundation_model": "/leonardo_work/EUHPC_A04_113/Alberto/GenMLFF-progect/Test-workflow/MACE_models_and_data/MACE-matpes-pbe-omat-ft.model",
+        ###Multi-head fine-tuning with these parameters
+        # "multiheads_finetuning": True,
+        # "pt_train_file": "/leonardo_work/EUHPC_A04_113/Alberto/GenMLFF-progect/Test-workflow/MACE_models_and_data/matpes-pbe-replay-data.xyz",
+        # "num_samples_pt": 100,
+        # "filter_type_pt": "exclusive",
+        # "subselect_pt": "fps",
+        # "weight_pt": 1.0,
+        # "atomic_numbers": "[6, 8]",
+        # "force_mh_ft_lr": true,
+        ###Train from scratch if no foundation model is provided
+        "energy_key": "energy",
+        "forces_key": "forces",
         "device": "cuda",
-        "batch_size": 2,
+        "default_dtype": float64, #dtype of the foundation model if fine-tuning
+        "batch_size": 1,
         "max_num_epochs": 10,
         "swa": False,
-        "E0s": "{6 : -561.5463794436}",
+        "E0s": "{6 : -243.0252124389, 8 : -561.5463794436}",
         "enable_cueq": False,
     }
