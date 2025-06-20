@@ -14,12 +14,6 @@ from autoplex.auto.GenMLFF.jobs import (
     write_restart,
 )
 
-#Set logger
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", filename="mlip_fitting.log"
-)
-
-
 @job
 def initial_iteration(
     name: str = "initial_iteration",
@@ -181,7 +175,14 @@ def GenMLFlow(
     Build the whole GenMLFF workflow.
     """
 
+    #Set logger
+    fname_logger = os.path.dirname(input_fname) + "/GenMLFF.log"
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", filename=fname_logger
+    )    
+
     #Read input parameters from a YAML file if provided
+    logging.info(f"Reading input parameters from {input_fname}")
     if input_fname is not None:
         with open(input_fname, 'r') as f:
             GenML_params = yaml.safe_load(f)
@@ -203,11 +204,12 @@ def GenMLFlow(
     assert mlip_params is not None or qe_params is not None, "mlip_params or qe_params must be provided"
     assert dataset_params is not None, "dataset_params must be provided"
     assert train_params is not None, "train_params must be provided"
+    logging.info("Succesfully read input parameters.")
 
     #Read restart file
     restart_params, restart_fname = {}, os.path.dirname(input_fname) + "/GenMLFF_restart.yaml"
     if os.path.exists(restart_fname):
-        logging.info(f"Found restart file {restart_fname}, reading restart parameters...")
+        logging.info(f"Found restart file {restart_fname}.")
 
         #Read restart file, contains:
         # "iteration" : 0,  # The previous iteration index
@@ -239,7 +241,7 @@ def GenMLFlow(
         joblist.append(previous_iteration)
     
     else:
-        logging.info(f"Starting GenMLFF workflow from scratch, setting up iteration 0")
+        logging.info(f"Starting GenMLFF workflow from scratch, setting up initial iteration")
         #Add the initial iteration job
         previous_iteration = initial_iteration(
             rss_params=rss_params,
@@ -258,6 +260,7 @@ def GenMLFlow(
     current_iteration_id = restart_params.get('iteration') + 1 if restart_params else 1
 
     #Loop over the number of requested iterations
+    logging.info(f"Setting up standard iterations {num_remaining_iterations} more standard iterations")
     for i in range(current_iteration_id, current_iteration_id + num_remaining_iterations):
         #Add the standard iteration job for each iteration
         current_iteration = standard_iteration(
