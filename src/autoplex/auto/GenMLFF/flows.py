@@ -237,7 +237,7 @@ def GenMLFlow(
             previous_mlip_paths=restart_params.get('mlip_paths'),
             previous_mlip_errors=restart_params.get('mlip_errors'),
         )
-        previous_iteration.name = f"standard_iteration_{restart_params['iteration'] + 1}"
+        previous_iteration.name = f"standard_iteration_{restart_params['iteration']}"
         joblist.append(previous_iteration)
     
     else:
