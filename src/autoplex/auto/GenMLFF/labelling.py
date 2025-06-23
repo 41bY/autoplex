@@ -117,8 +117,11 @@ class VASPStaticLabelling(Maker):
             #Get adaptor to convert ASE Atoms to pymatgen Structure
             ase_pmg_adaptor = AseAtomsAdaptor()
             #Define worker outputs
-            worker_output = {'success' : [], 'output' : [], 'outdir' : []}
+            worker_outputs = []
             for idx, struct in enumerate(structures):
+                #Define worker output
+                worker_output = {'success' : [], 'output' : [], 'outdir' : []}
+
                 #Convert ASE Atoms object to pymatgen Structure object
                 pmg_struct = ase_pmg_adaptor.get_structure(struct)
 
@@ -138,10 +141,10 @@ class VASPStaticLabelling(Maker):
                 worker_output['outdir'].append(outdir)                
 
                 #Append to the job list
-                job_list.append(static_job)
+                job_list.append(static_job), worker_outputs.append(worker_output)
             
             #Define flow
-            vasp_flow = Flow(jobs=job_list, output=worker_output, name="vasp_static_labelling")
+            vasp_flow = Flow(jobs=job_list, output=worker_outputs, name="vasp_static_labelling")
 
         else:
             raise ValueError("No structures found to compute with VASP. Exiting.")
