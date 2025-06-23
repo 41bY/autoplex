@@ -1,5 +1,6 @@
 """Jobs for running the workflow."""
-
+import os
+import shutil
 import yaml
 from dataclasses import field
 from jobflow import job, Flow, Response
@@ -259,6 +260,7 @@ def write_restart(
     final_dataset_path: str | None = None,
     final_mlip_paths: list[str] | None = None,
     final_mlip_errs: list[float] | None = None,
+    create_restart_dir: bool = True,
 ):
     """
     Write the restart file for the GenMLFF workflow.
@@ -272,6 +274,25 @@ def write_restart(
     if restart_fname is None or current_iteration_id is None or final_dataset_path is None or final_mlip_paths is None or final_mlip_errs is None:
         raise ValueError("All parameters must be provided to write a valid restart file.")
     
+    #Create the restart directory if it does not exist
+    if create_restart_dir:
+        #Create restart directory
+        restart_dir = os.path.dirname(restart_fname) + "/Restart"
+        os.makedirs(restart_dir, exist_ok=True)
+
+        #Define dataset path and MLIP paths for the restart
+        final_dataset_restart_path = restart_dir + f"/unique_dataset_iteration_{current_iteration_id}.extxyz"
+        final_mlip_restart_paths = [f"{restart_dir}/Ite{current_iteration_id}_MLIP{id}_{os.path.basename(path)}" for id, path in enumerate(final_mlip_paths)]
+
+        #Copy dataset path and MLIP paths to the restart directory
+        shutil.copy(final_dataset_path, final_dataset_restart_path)
+        for mlip_path, mlip_restart_path in zip(final_mlip_paths, final_mlip_restart_paths):
+            shutil.copy(mlip_path, mlip_restart_path)
+        
+        #Update the paths in the parameters
+        final_dataset_path = final_dataset_restart_path
+        final_mlip_paths = final_mlip_restart_paths
+
     #Dump restart parameters into a dictionary
     restart_params = {
         "iteration": current_iteration_id,
