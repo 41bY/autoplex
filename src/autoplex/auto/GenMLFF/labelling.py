@@ -10,9 +10,180 @@ import numpy as np
 
 from ase import Atoms
 from ase.io import read, write
+from pymatgen.io.ase import AseAtomsAdaptor
 from jobflow import job, Flow, Maker, Response
 
+
+from atomate2.vasp.jobs.core import StaticMaker
+from atomate2.vasp.sets.core import StaticSetGenerator
+from atomate2.vasp.powerups import (
+    update_user_incar_settings,
+    update_user_potcar_settings,
+)
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+
+
+@dataclass
+class VASPStaticLabelling(Maker):
+    """
+    Maker to set up and run VASP static calculations for input structures.
+
+    It supports custom VASP input parameters and error handlers.
+
+    Parameters
+    ----------
+    name: str
+        Name of the flow.
+    fname_structures: str | list[str] | None
+        Path or list of paths to ASE-readable files containing the structures to be computed.
+    custom_incar: dict
+        Dictionary of custom VASP input parameters. If provided, will update the
+        default parameters. Default is None.
+    custom_potcar: dict
+        Dictionary of POTCAR settings to update. Keys are element symbols, values are the desired POTCAR labels.
+        Default is None.
+
+    Returns
+    -------
+    list[dict]
+        A dictionary containing:
+        -   'successes' : bool, 'OUTCAR' : str, 'OUTDIR' : str}
+    """
+
+    name: str = "do_vasp_labelling"
+    fname_structures: str | list[str] | None = None #Path or list[Path] to ASE-readible file containing the structures to be computed
+    custom_incar: dict | None = None
+    custom_potcar: dict | None = None
+
+    @job
+    def make(self):
+        """
+        Maker to set up and run VASP static calculations.
+
+        Returns
+        -------
+        """
+        #Define list of jobs
+        job_list = []
+
+        #Get default VASP settings
+        default_custom_set = {
+            "ADDGRID": "True",
+            "ENCUT": 520,
+            "EDIFF": 1e-06,
+            "ISMEAR": 0,
+            "SIGMA": 0.01,
+            "PREC": "Accurate",
+            "ISYM": None,
+            "KSPACING": 0.2,
+            "NPAR": 8,
+            "LWAVE": "False",
+            "LCHARG": "False",
+            "ENAUG": None,
+            "GGA": None,
+            "ISPIN": None,
+            "LAECHG": None,
+            "LELF": None,
+            "LORBIT": None,
+            "LVTOT": None,
+            "NSW": None,
+            "SYMPREC": None,
+            "NELM": 100,
+            "LMAXMIX": None,
+            "LASPH": None,
+            "AMIN": None,
+        }
+
+        # Update default settings with custom incar settings
+        if self.custom_incar is not None:
+            default_custom_set.update(self.custom_incar)
+        custom_set = default_custom_set
+
+        #Instantiate the VASP static maker
+        st_m = StaticMaker(
+            input_set_generator=StaticSetGenerator(user_incar_settings=custom_set),
+            run_vasp_kwargs={"handlers": ()},
+        )
+
+        #Update the VASP static maker with custom POTCAR settings
+        if self.custom_potcar is not None:
+            st_m = update_user_potcar_settings(st_m, potcar_updates=self.custom_potcar)
+
+        #Load structures
+        structures = self.load_structures(fname_structures=self.fname_structures)
+
+        if structures: #Define 1 VASP job for each structure
+            #Get adaptor to convert ASE Atoms to pymatgen Structure
+            ase_pmg_adaptor = AseAtomsAdaptor()
+            #Define worker outputs
+            worker_output = {'success' : [], 'output' : [], 'outdir' : []}
+            for idx, struct in enumerate(structures):
+                #Convert ASE Atoms object to pymatgen Structure object
+                pmg_struct = ase_pmg_adaptor.get_structure(struct)
+
+                #Create static VASP job
+                static_job = st_m.make(structure=pmg_struct)
+                static_job.name = f"static_bulk_{idx}"
+
+                #Get output
+                if static_job.output.state.SUCCESS: success = True
+                else: success = False
+                outdir = static_job.output.dir_name
+                output_fname = outdir +"/OUTCAR"
+
+                #Save output
+                worker_output['success'].append(success)
+                worker_output['output'].append(output_fname)
+                worker_output['outdir'].append(outdir)                
+
+                #Append to the job list
+                job_list.append(static_job)
+            
+            #Define flow
+            vasp_flow = Flow(jobs=job_list, output=worker_output, name="vasp_static_labelling")
+
+        else:
+            raise ValueError("No structures found to compute with VASP. Exiting.")
+
+        return Response(replace=vasp_flow, output=vasp_flow.output)
+
+    def load_structures(self,
+            fname_structures: str | list[str] | None = None,
+            ):
+        """
+        Load structures from a file or a list of files.
+        Parameters
+        ----------
+        fname_structures : str | list[str] | None
+            Path or list of paths to ASE-readable files containing the structures to be loaded.
+            If None, no structures will be loaded.
+        Returns
+        -------
+        list[Atoms]
+            List of ASE Atoms objects representing the loaded structures.
+        """
+        #Convert fname_structures to a list if it is a string
+        if isinstance(fname_structures, str):
+            fname_structures = [fname_structures]
+        elif fname_structures is None:
+            return []
+        elif not isinstance(fname_structures, list):
+            raise ValueError("fname_structures must be a string or a list of strings.")
+        
+        #Loop over provided files and load structures
+        structures = []
+        for fname in fname_structures:
+            #Check if all files exist
+            if not os.path.exists(fname): raise FileNotFoundError(f"File {fname} does not exist.")
+        
+            #Read structures from file
+            try:
+                structures += read(fname, index=":")
+            except Exception as e:
+                logging.error(f"Error reading file {fname}: {e}")
+
+        return structures
 
 @dataclass
 class MLIPStaticLabelling(Maker):
@@ -641,7 +812,7 @@ class QEstaticLabelling(Maker):
         pwi_files = glob(os.path.join(work_dir, "*.pwi"))
 
         #Check pwo does not exist
-        worker_output = {'success' : [], 'pwo' : [], 'outdir' : []}
+        worker_output = {'success' : [], 'output' : [], 'outdir' : []}
         for pwi in pwi_files:
             #Try locking the pwi file
             lock_pwi, pwo_fname = self.lock_input(pwi_fname=pwi, worker_id=id)
@@ -660,7 +831,7 @@ class QEstaticLabelling(Maker):
 
             #Update output
             worker_output['success'].append(success)
-            worker_output['pwo'].append(pwo_fname)
+            worker_output['output'].append(pwo_fname)
             worker_output['outdir'].append(outdir)
 
         return worker_output

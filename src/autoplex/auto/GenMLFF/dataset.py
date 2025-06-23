@@ -204,7 +204,7 @@ class DatasetMaker(Maker):
             output_files = []
             for labeled_output in labeled_outputs:
                 try:
-                    output_files += [pwo for success, pwo in zip(labeled_output['success'], labeled_output['pwo']) if success]
+                    output_files += [output for success, output in zip(labeled_output['success'], labeled_output['output']) if success]
                 except:
                     logging.error(f"Error in reading of labeled output: {labeled_output}, skipping it.")
             
