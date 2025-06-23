@@ -27,7 +27,7 @@ def initial_iteration(
     """
     Build the initial iteration flow.
     """
-    #Define joblist
+    #Define joblist and current iteration id
     joblist = []
 
     #Initialize the provided structure generation job

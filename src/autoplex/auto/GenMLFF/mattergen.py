@@ -1,6 +1,7 @@
 import os
 import subprocess
 from dataclasses import dataclass
+from ase.io import read, write
 from jobflow import job, Flow, Maker, Response
 
 def params_from_config(config: dict):
@@ -72,21 +73,25 @@ class MatterGenMaker(Maker):
         Returns:
             Flow: A JobFlow that executes the MatterGen generation command.
         """
-        #Define joblist and outlist
-        joblist, outlist = [], []
+        #Define joblist
+        joblist = []
 
         #Map config parameters to MatterGen's CLI arguments
         cli_cmds = self.config2cli(run_cmd)
 
-        #Run the MatterGen generation command
+        #Run the MatterGen-generate (possibly multiple instances TODO)
         extxyz_structures_path = self.run_mattergen(cli_cmds)
         extxyz_structures_path.name = "MatterGenGenerate"
-        joblist.append(extxyz_structures_path), outlist.append(extxyz_structures_path.output)
+        joblist.append(extxyz_structures_path)
 
-        #Return a list containing the path to the generated structures
-        #TODO: Possibly multiple instances of MatterGenMaker as QE_workers
+        #Run the enumeration of generated structures
+        generated_structures_paths = [extxyz_structures_path.output]
+        enumerated_structures_path = self.enumerate_structures(generated_structures_paths)
+        enumerated_structures_path.name = "EnumerateStructures"
+        joblist.append(enumerated_structures_path)
 
-        matgen_flow = Flow(jobs=joblist, output=outlist)
+        #Create the Flow to encapsulate the jobs
+        matgen_flow = Flow(jobs=joblist, output=enumerated_structures_path.output)
 
         return Response(replace=matgen_flow, output=matgen_flow.output)
     
@@ -132,3 +137,30 @@ class MatterGenMaker(Maker):
             raise RuntimeError(f"Failed to run MatterGen command: {e}")
 
         return extxyz_structures_path
+
+    @job
+    def enumerate_structures(self, structures: list[str]):
+        """
+        Enumerate the generated structures.
+        
+        Args:
+            structures (list[str]): List of paths to the generated structures.
+        
+        Returns:
+            list[str]: List of enumerated structure paths.
+        """
+        # Read generated structures from the extxyz file
+        atoms = []
+        for structure in structures:
+            atoms += read(structure, format="extxyz", index=":")
+            
+        # Label the structures with their unique indices
+        for i, atom in enumerate(atoms):
+            atom.info['unique_index'] = i
+        
+        # Dump enumerated structures back to extxyz format
+        enumerated_structures_path = os.getcwd() + "/enumerated_structures.extxyz"
+        write(enumerated_structures_path, atoms, format="extxyz", write_info=True)
+
+        # Return the path to the enumerated structures
+        return [enumerated_structures_path]

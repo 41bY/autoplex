@@ -2,8 +2,7 @@
 
 import os
 import logging
-from typing import Literal
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from ase import Atoms
@@ -49,8 +48,6 @@ class EnsembleEvaluatorMaker(Maker):
         for path in self.structure_paths:
             structures += read(path, index=":")
 
-        print(f"Loaded {len(structures)} built using BuildCell") #DEBUG
-
         # Relax the structures using the pilot model
         relaxed_structures = self.relax_structures(
             structures=structures,
@@ -59,10 +56,20 @@ class EnsembleEvaluatorMaker(Maker):
             pre_trained_kwargs=self.pre_trained_kwargs,
         )
 
-        print(f"Relaxed {len(relaxed_structures)} structures.") #DEBUG
+        #Load every relaxed structure to evaluate the ensemble deviation (it should work also in case of interrupted runs)
+        fnames = [f"{os.getcwd()}/relax_id{structure.info['unique_index']}.extxyz" for structure in relaxed_structures]
+        relaxed_structures = []
+        for fname in fnames:
+            try:
+                atoms = read(fname)
+                relaxed_structures.append(atoms)
+            except Exception as e:
+                logging.warning(f"Failed to read structure from {fname}: {e}")
+                continue
 
         # For each relaxed structure, evaluate the deviation of the ensemble of models
         # return list of ase atoms with: array['force_deviation'] and info['energy_deviation']
+        # This should be pretty fast, since the structures are already relaxed
         relaxed_structures = self.evaluate_ensemble_deviation(
             structures=relaxed_structures,
             mlip_models=mlip_models,
@@ -80,6 +87,12 @@ class EnsembleEvaluatorMaker(Maker):
 
         print(f"Evaluated the ensemble deviation for {len(relaxed_structures)} structures.") #DEBUG
         print(f"Model deviations's shape = {[atoms.arrays['force_deviation'].shape for atoms in relaxed_structures]}") #DEBUG
+
+        #Remove saved structures with no deviations
+        for fname in fnames:
+            if not os.path.exists(fname): continue
+            print(f"Removing original relaxed structure: {fname}") #DEBUG
+            os.remove(fname) # Remove the original relaxed structures
 
         # Sample the structures based on the deviation of the ensemble of models
         #TODO: Implement more sophisticated sampling methods
@@ -142,9 +155,16 @@ class EnsembleEvaluatorMaker(Maker):
             pilot_model = mlip_model
             logging.info(f"Pilot model set to the best model in the ensemble")
 
+        #Get working directory
+        cwd = os.getcwd()
+
         # Loop over structures
         relaxed_structures = []
         for structure in structures:
+            #Search for the structure in the working directory
+            structure_fname = f"{cwd}/relax_id{structure.info['unique_index']}.extxyz"
+            if os.path.exists(structure_fname): continue # Skip if the structure is already relaxed
+
             # Set the calculator for the structure
             structure.calc = pilot_model
             
@@ -157,6 +177,8 @@ class EnsembleEvaluatorMaker(Maker):
             relaxed_structure.calc = None
             relaxed_structures.append(relaxed_structure)
 
+            # Save the relaxed structure to a file
+            write(structure_fname, relaxed_structure, format="extxyz", write_info=True)
 
         return relaxed_structures
     
