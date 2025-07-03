@@ -1,18 +1,18 @@
 #Number of iterations for the GenML workflow
-num_iterations: 2
+num_iterations: 1
 
-#Parameters for MatterGen generate (use MatterGen or RSS to generate structures)
+#Parameters for MatterGen generate job (use MatterGen or RSS to generate structures)
 mattergen_params:
   results_path: MatGenStructures
   "model_path": /leonardo_scratch/fast/EUHPC_A04_113/Alberto/GenModels/MatterGen/MatterGen_models/chemical_system_and_hull
-  "batch_size": 5
+  "batch_size": 3
   "num_batches": 2
   "record_trajectories": False
   "properties_to_condition_on": "{'chemical_system' : 'C-O', 'energy_above_hull' : 0.05}"
   "diffusion_guidance_factor": 2.0
 
 
-# #Parameters for Random Structure Search (RSS) using Buildcell (use RSS or MatterGen to generate structures)
+# #Parameters for Random Structure Search job (RSS) using Buildcell (use RSS or MatterGen to generate structures)
 # rss_params:
 #   "tag": "CO" #Tag of systems. It can also be used for setting up elements and stoichiometry.
 #   "generated_struct_numbers": [6, 6] #Expected number of generated randomized unit cells for each run
@@ -24,7 +24,7 @@ mattergen_params:
 #   "num_processes": 1 #Number of processes to use for parallel computation
 #   # "fragment_file": None #Fragment(s) for random structures, e.g. molecules, to be placed indivudally intact.
 
-#Parameters for the ensemble evaluator
+#Parameters for the ensemble evaluator job
 ensemble_params:
   "mlip_type": "MACE"
   "mlip_paths": []
@@ -39,14 +39,34 @@ ensemble_params:
       "default_dtype" : "float32",
   }
 
-#Parameters for QuantumEspresso scf runs (Use QuantumEspresso or MLIP to run scf calculations)
+#Parameters for sampling job
+sampling_params: 
+  "num_of_samples": 6 #Number of structures to sample, if double-shot is used, this is an upper bound
+  "selection_method": "fps"  # Options: random, uniform, cur, fps, bcur1s, bfps1s, bcur2i, bfps2i
+  "soap_params": { #Parameters for SOAP descriptor
+      "r_cut": 5.0,
+      "n_max": 6,
+      "l_max": 6,
+      "sigma": 1.0,
+      "periodic": True,
+      "average": "outer",
+  }
+  "boltz_params": { #Parameters for Boltzmann sampling
+      "kt": 0.3, # Effective temperature in eV
+      "boltz_frac": 0.8, # Fraction of structures to be selected by Boltzmann sampling
+      "bolt_max_num": 3000, # Maximum number of structures to be selected by Boltzmann sampling
+  }
+  # "isolated_atom_energies": {'6': '-1.26281801', '8': '-1.54690765'} # MACE-omat isolated atom energies in eV
+  "isolated_atom_energies": {'6' : '-243.0252124389', '8' : '-561.5463794436'} # My isolated atom energies in eV
+  "random_seed": 42 
+
+#Parameters for QuantumEspresso job: scf runs (Use QuantumEspresso or MLIP to run scf calculations)
 qe_params:
   "qe_run_cmd": "mpirun -np 1 pw.x"
   "num_qe_workers": 2 #Number of workers to use for the calculations. If None setp up 1 worker per scf
   "fname_pwi_template": "/leonardo_work/EUHPC_A04_113/Alberto/GenMLFF-progect/Test-workflow/rss-mlip/reference.pwi" #Path to file containing the template QE input
   "kspace_resolution": 0.3 #K-space resolution for the QE calculations in Å^-1
   "koffset": [False, False, False] #K-point offset for the QE calculations
-
 # #Parameters for MLIP scf runs (Use QuantumEspresso or MLIP to run scf calculations)
 # mlip_params:
 #   "mlip_type": "MACE" #Type of MLIP to be used
@@ -56,7 +76,7 @@ qe_params:
 #   }
 #   "dimer" : True
 
-#Parameters for specifying dataset composition for model ensemble
+#Parameters for specifying dataset composition job for model ensemble
 dataset_params:
   "pre_database_dir" : None
   "init_database_dir" : None
@@ -66,7 +86,7 @@ dataset_params:
   "scf_code": "QE" #Code to use for the scf calculations, e.g. "QE" or "VASP"
 
 
-#Parameters for the training/fine-tuning of models in the ensemble 
+#Parameters for the training/fine-tuning of models job in the ensemble 
 train_params:
     "num_models": 4
     "remove_model_datasets": True
