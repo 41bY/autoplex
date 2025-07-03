@@ -7,6 +7,7 @@ from autoplex.auto.GenMLFF.jobs import (
     RSS,
     MatterGen,
     evaluate_mlip_ensemble,
+    atomic_configuration_sampling,
     MLscf,
     QEscf,
     dataset_ensembler,
@@ -90,6 +91,7 @@ def standard_iteration(
     rss_params: dict = field(default_factory=dict),
     mattergen_params: dict = field(default_factory=dict),
     ensemble_params: dict = field(default_factory=dict),
+    sampling_params: dict = field(default_factory=dict),
     mlip_params: dict = field(default_factory=dict),
     qe_params: dict = field(default_factory=dict),
     dataset_params: dict = field(default_factory=dict),
@@ -114,14 +116,24 @@ def standard_iteration(
     #Initialize the RandomizedStructureMaker with the provided parameters
     #Initialized ensemble_params from the previous iteration
     ensemble_params['mlip_paths'] = previous_mlip_paths
-    ensemble_params['mlip_errors'] = previous_mlip_errors   
+    ensemble_params['mlip_errors'] = previous_mlip_errors 
+    print(f"Ensemble parameters: {ensemble_params}")  #DEBUG
     ensemble_job = evaluate_mlip_ensemble(**ensemble_params, structure_paths=generation_job.output)
     joblist.append(ensemble_job)
+
+    # If sampling parameters are provided, sample the atomic configurations before the single-point calculations
+    if sampling_params:
+        sampling_job = atomic_configuration_sampling(**sampling_params, structure_path=ensemble_job.output)
+        joblist.append(sampling_job)
+        #Get the sampled structures path
+        structures_path = sampling_job.output
+    else: # If no sampling parameters: perform single-point calculations on every evaluated configuration
+        structures_path = ensemble_job.output
 
     # Initialize Single-point-calulation job
     if qe_params is not None:
         #Update the QE parameters with the ensemble job output
-        qe_params['fname_structures'] = ensemble_job.output
+        qe_params['fname_structures'] = structures_path
         
         # Run QEscf for single-point calculations
         qe_job = QEscf(qe_params)
@@ -132,7 +144,7 @@ def standard_iteration(
     
     elif mlip_params is not None:
         # If MLIP parameters are provided, use MLscf for single-point calculations
-        mlip_job = MLscf(**mlip_params, structure_paths=ensemble_job.output)
+        mlip_job = MLscf(**mlip_params, structure_paths=structures_path)
         joblist.append(mlip_job)
         #Get output from the MLIP job
         scf_output = mlip_job.output
@@ -193,6 +205,7 @@ def GenMLFlow(
     rss_params = GenML_params.get("rss_params", None)
     mattergen_params = GenML_params.get("mattergen_params", None)
     ensemble_params = GenML_params.get("ensemble_params", None)
+    sampling_params = GenML_params.get("sampling_params", None)
     mlip_params = GenML_params.get("mlip_params", None)
     qe_params = GenML_params.get("qe_params", None)
     dataset_params = GenML_params.get("dataset_params", None)
@@ -229,6 +242,7 @@ def GenMLFlow(
             rss_params=rss_params,
             mattergen_params=mattergen_params,
             ensemble_params=ensemble_params,
+            sampling_params=sampling_params,
             mlip_params=mlip_params,
             qe_params=qe_params,
             dataset_params=dataset_params,
@@ -267,6 +281,7 @@ def GenMLFlow(
             rss_params=rss_params,
             mattergen_params=mattergen_params,
             ensemble_params=ensemble_params,
+            sampling_params=sampling_params,
             mlip_params=mlip_params,
             qe_params=qe_params,
             dataset_params=dataset_params,

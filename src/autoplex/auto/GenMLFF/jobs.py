@@ -3,13 +3,16 @@ import os
 import shutil
 import yaml
 from dataclasses import field
-from jobflow import job, Flow, Response
+from jobflow import job
 from autoplex.auto.GenMLFF.rss import RandomizedStructureMaker
+from autoplex.auto.GenMLFF.mattergen import MatterGenMaker, params_from_config
+from autoplex.auto.GenMLFF.evaluation import EnsembleEvaluatorMaker
+from autoplex.auto.GenMLFF.sampling import SamplingMaker
 from autoplex.auto.GenMLFF.labelling import MLIPStaticLabelling, QEstaticLabelling, qe_params_from_config
 from autoplex.auto.GenMLFF.dataset import DatasetMaker, data_ensembler_from_config
 from autoplex.auto.GenMLFF.training import MLIPEnsembleMaker
-from autoplex.auto.GenMLFF.sampling import EnsembleEvaluatorMaker
-from autoplex.auto.GenMLFF.mattergen import MatterGenMaker, params_from_config
+
+
 
 
 #STRUCTURE GENERATION JOBS
@@ -119,6 +122,43 @@ def evaluate_mlip_ensemble(
     return evaluated_structures_path
 ####################################################################################
 
+# CONFIGURATION SAMPLING JOB
+@job
+def atomic_configuration_sampling(
+    name: str = "do_atomic_configuration_sampling",
+    structure_path: str | None = None,  # Path to the file containing structures
+    num_of_samples: int = 5, # Number of structures to sample
+    selection_method: str | None = None, # Method for selecting samples
+    soap_params: dict = field(default_factory=dict),  # SOAP descriptor parameters
+    boltz_params: dict = field(default_factory=dict),  # Boltzmann hentalpy weighting parameters
+    isolated_atom_energies: dict | None = None,
+    random_seed: int = None,
+):
+    """
+    Initialize the SamplingMaker with the provided parameters.
+
+    Parameters
+    ----------
+    kwargs: dict
+        Dictionary containing the parameters for the SamplingMaker.
+    """
+    #Parameters for SamplingMaker
+    sampling_params = {
+        "name": name,
+        "structure_path": structure_path,
+        "num_of_samples": num_of_samples,
+        "selection_method": selection_method,
+        "soap_params": soap_params,
+        "boltz_params": boltz_params,
+        "isolated_atom_energies": isolated_atom_energies,
+        "random_seed": random_seed,
+    }
+
+    # Execute atomic configuration sampling
+    # and return the paths to the sampled structures
+    sampled_structures_paths = SamplingMaker(**sampling_params).make()
+
+    return sampled_structures_paths
 
 # STATIC LABELLING JOBS
 @job

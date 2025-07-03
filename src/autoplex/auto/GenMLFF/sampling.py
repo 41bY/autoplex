@@ -1,250 +1,330 @@
-"""Flows consisting of jobs to perform exploration based on model-deviation and sampling."""
-
 import os
-import logging
-from dataclasses import dataclass
+from typing import Literal
+from dataclasses import dataclass, field
 
 import numpy as np
-from ase import Atoms
-from ase.optimize import BFGS
-from mace.calculators import MACECalculator
-from ase.io import read, write
 from jobflow import Maker
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", filename="mlip_fitting.log"
-)
+from ase import Atoms
+from ase.io import read, write
+from dscribe.descriptors import SOAP
+from skmatter.sample_selection import FPS, CUR
 
 
 @dataclass
-class EnsembleEvaluatorMaker(Maker):
+class SamplingMaker(Maker):
     """
-    Class to evaluate the ensemble of MLIP models.
-    """
-    name: str = "MLIP_ensemble_evaluator"
-    mlip_type: str | None = None # Type of MLIP model to use: "MACE"
-    mlip_paths: list[str] | None = None # Paths to the MLIP models
-    mlip_errors: list[float] | None = None # Training errors of the MLIP models -> decide the pilot model
-    mlip_kwargs: dict | None = None
-    structure_paths: list[str] | None = None
-    pre_trained_model: str | None = None
-    pre_trained_kwargs: dict | None = None
+    Make class to sample structures based on the specified method.
+    Parameters
+    ----------
+    name: str
+    Name of the Maker. Default is "atomic_structures_sampler".
 
+    structure_path: str | None
+    Path to the file containing structures. Structures path must be provided.
 
-    def make(self):
-        """
-        Function to create the MLIP ensemble evaluator.
-        """
-        # Load the ensemble of MLIP models: first model is the "pilot" model
-        mlip_models = self.load_mlip_models(
-            mlip_type=self.mlip_type,
-            mlip_kwargs=self.mlip_kwargs,
-            mlip_paths=self.mlip_paths,
-            mlip_errors=self.mlip_errors,
-        )
+    num_of_selection: int
+    Number of structures to be sampled. Default is 5.
 
-        # Load the structures to be evaluated
-        structures = []
-        for path in self.structure_paths:
-            structures += read(path, index=":")
+    selection_method : Literal["cur", "fps", "bfps1s", "bcur1s", "bcur2i", "bfps2i", "random", "uniform"]
+    Method for selecting samples. Options include:
+        - "cur": Pure CUR sampling.
 
-        # Relax the structures using the pilot model
-        relaxed_structures = self.relax_structures(
-            structures=structures,
-            mlip_model=mlip_models[0],
-            pre_trained_model_path=self.pre_trained_model,
-            pre_trained_kwargs=self.pre_trained_kwargs,
-        )
+        - "fps": Pure furthest point sampling (FPS).
 
-        #Load every relaxed structure to evaluate the ensemble deviation (it should work also in case of interrupted runs)
-        fnames = [f"{os.getcwd()}/relax_id{structure.info['unique_index']}.extxyz" for structure in relaxed_structures]
-        relaxed_structures = []
-        for fname in fnames:
-            try:
-                atoms = read(fname)
-                relaxed_structures.append(atoms)
-            except Exception as e:
-                logging.warning(f"Failed to read structure from {fname}: {e}")
-                continue
-
-        # For each relaxed structure, evaluate the deviation of the ensemble of models
-        # return list of ase atoms with: array['force_deviation'] and info['energy_deviation']
-        # This should be pretty fast, since the structures are already relaxed
-        relaxed_structures = self.evaluate_ensemble_deviation(
-            structures=relaxed_structures,
-            mlip_models=mlip_models,
-        )
-
-        #Save the relaxed structures with the evaluated deviations
-        write("relaxed_structures.extxyz", 
-              relaxed_structures, 
-              format="extxyz", 
-              columns=['symbols', 
-                       'positions',
-                       'force_value',
-                       'force_deviation'],
-              write_info=True)
-
-        print(f"Evaluated the ensemble deviation for {len(relaxed_structures)} structures.") #DEBUG
-        print(f"Model deviations's shape = {[atoms.arrays['force_deviation'].shape for atoms in relaxed_structures]}") #DEBUG
-
-        #Remove saved structures with no deviations
-        for fname in fnames:
-            if not os.path.exists(fname): continue
-            print(f"Removing original relaxed structure: {fname}") #DEBUG
-            os.remove(fname) # Remove the original relaxed structures
-
-        # Sample the structures based on the deviation of the ensemble of models
-        #TODO: Implement more sophisticated sampling methods
-        sampled_structures = self.sample_structures(
-            structures=relaxed_structures,
-            deviation_threshold=0.1,
-            relative=0.01, # Relative threshold for force deviation 
-        )
-
-        print(f"Sampled {len(sampled_structures)} structures using ensemble deviation.") #DEBUG
-
-        # Save the sampled structures to a file
-        cwd = os.getcwd()
-        sampled_structures_path = os.path.join(cwd, "sampled_structures.extxyz")
-        write(sampled_structures_path, sampled_structures, format="extxyz")
-        logging.info(f"Sampled structures saved to {sampled_structures_path}")
-
-        return sampled_structures_path
-
-    def load_mlip_models(
-            self,
-            mlip_type: str,
-            mlip_kwargs: dict,
-            mlip_paths: list[str],
-            mlip_errors: list[float],
-            ):
-        """
-        Function to load the ensemble of MLIP models.
-        """
-        # Load the MLIP models from the specified directory
-        mlip_models = []
-        for mlip_path in mlip_paths:
-            if mlip_type == "MACE":
-                # Load the MACE model
-                mlip_model = MACECalculator(**mlip_kwargs, model_paths=mlip_path)
-            else:
-                raise ValueError(f"Unsupported MLIP type: {mlip_type}. Supported types are: MACE.")
-            mlip_models.append(mlip_model)
+        - "bcur": Boltzmann flat histogram in enthalpy, then CUR.
+            - "bcur1s": Execute bcur with one shot (1s)
+            - "bcur1s": Execute bcur with two iterations (2i)
         
-        # Sort the models based on the error: lower errors first
-        mlip_models = sorted(mlip_models, key=lambda x: mlip_errors[mlip_models.index(x)])
+        - "bfps": Boltzmann flat histogram in enthalpy, then FPS.
+            - "bfps1s": Execute bfps with one shot (1s)
+            - "bfps2i": Execute bfps with two iterations (2i)
 
-        return mlip_models
+        - "random": Random selection.
+
+        - "uniform": Uniform selection.
+
+    soap_params: dict
+    SOAP descriptor parameters
+        - 'l_max': int, Maximum degree of spherical harmonics (default 12).
+        - 'n_max': int, Maximum number of radial basis functions (default 12).
+        - 'sigma': float, Width of Gaussian smearing (default 0.0875).
+        - 'r_cut: float, Radial cutoff distance (default 10.5).
+        - 'periodic': bool, Whether to use periodic boundary conditions (default True).
+        - 'average': ["inner", "outer"], Average method for SOAP vectors (default "outer").
+        - 'species': bool, Whether to consider species information (default True).
+
+    boltz_params: dict
+    Boltzmann hentalpy probability parameters
+        - 'kt': float, Temperature in eV for Boltzmann weighting (default 0.3).
+        - 'boltz_frac': float, Fraction of Boltzmann CUR selections (default 0.8).
+        - 'bolt_max_num': int, Maximum number of Boltzmann selections (default 3000).
     
-    def relax_structures(
-            self,
-            structures: list[Atoms],
-            mlip_model: MACECalculator,
-            pre_trained_model_path: str | None = None,
-            pre_trained_kwargs: dict | None = None,
-            ):
+    isolated_atom_energies: dict
+        Dictionary of isolated energy values for species. Required for 'boltzhist_cur'
+        selection method. Default is None.
+    
+    random_seed: int, optional
+        Seed for random number generation, ensuring reproducibility of sampling.
+
+    Returns
+    -------
+    list of ase.Atoms
+        The selected atoms.
+    """    
+    name: str = "atomic_configuration_sampling"
+    structure_path: str | None = None  # Path to the file containing structures
+    num_of_samples: int = 5 # Number of structures to sample
+    selection_method: Literal["cur", "bcur1s", "bcur2i", "fps", "bfps1s", "bfps2i", "random", "uniform"] | None = None # Method for selecting samples
+    soap_params: dict = field(default_factory=dict)  # SOAP descriptor parameters
+    boltz_params: dict = field(default_factory=dict)  # Boltzmann hentalpy weighting parameters
+    isolated_atom_energies: dict | None = None
+    random_seed: int = None
+
+    def make(self) -> str:
         """
-        Function to relax a list of structures using the specified MLIP model.
+        Main maker method to sample structures based on the specified method.
+
+        Returns
+        -------
+        str
+            Path to extxyz file with the sampled ase.Atoms.
         """
-        # Get pilot model
-        if pre_trained_model_path is not None:
-            pilot_model = MACECalculator(model_paths=pre_trained_model_path, **pre_trained_kwargs)
-            logging.info(f"Pilot model set to pre-trained model: {pre_trained_model_path}")
+        #Generate random seed if not provided
+        if self.random_seed is None:
+            self.random_seed = np.random.randint(0, 10000)
+
+        #Read structures from file
+        structures = read(self.structure_path, index=":")     
+        
+        #Perform selection based on the specified method
+        if self.selection_method == "random":
+            selected_atoms = self.random_selection(atoms=structures)
+        
+        elif self.selection_method == "uniform":
+            selected_atoms = self.uniform_selection(atoms=structures)
+        
+        elif self.selection_method == "cur":
+            selected_atoms = self.descriptor_based_selection(atoms=structures, method="cur")
+
+        elif self.selection_method == "fps":            
+            selected_atoms = self.descriptor_based_selection(atoms=structures, method="fps")
+
+        elif self.selection_method == "bcur1s":
+            selected_atoms = self.boltz_and_descriptor_selection(atoms=structures, descriptor_method="cur")
+
+        elif self.selection_method == "bfps1s":
+            selected_atoms = self.boltz_and_descriptor_selection(atoms=structures, descriptor_method="fps")
+        
+        elif self.selection_method == "bcur2i":
+            # Perform Boltzmann and descriptor selection with two iterations
+            first_selected_atoms = self.boltz_and_descriptor_selection(atoms=structures, descriptor_method="cur")
+            selected_atoms = self.boltz_and_descriptor_selection(atoms=first_selected_atoms, descriptor_method="cur")
+        
+        elif self.selection_method == "bfps2i":
+            # Perform Boltzmann and descriptor selection with two iterations
+            first_selected_atoms = self.boltz_and_descriptor_selection(atoms=structures, descriptor_method="fps")
+            selected_atoms = self.boltz_and_descriptor_selection(atoms=first_selected_atoms, descriptor_method="fps")            
+        
         else:
-            pilot_model = mlip_model
-            logging.info(f"Pilot model set to the best model in the ensemble")
+            raise ValueError(
+                f"Invalid selection method: {self.selection_method}. "
+                "Please choose from 'cur', 'bcur1s', 'bcur2i', 'fps', 'bfps1s', 'bfps2i', 'random', or 'uniform'."
+            )
+        
+        #Dump selected atoms to file
+        selected_structure_path = os.getcwd() + f"/sampled_structures.extxyz"
+        write(selected_structure_path, selected_atoms, format="extxyz")
 
-        #Get working directory
-        cwd = os.getcwd()
+        return selected_structure_path
 
-        # Loop over structures
-        relaxed_structures = []
-        for structure in structures:
-            #Search for the structure in the working directory
-            structure_fname = f"{cwd}/relax_id{structure.info['unique_index']}.extxyz"
-            if os.path.exists(structure_fname): continue # Skip if the structure is already relaxed
+    def random_selection(self, atoms) -> list[Atoms]:
+        """
+        Select structures randomly from the provided structures.
 
-            # Set the calculator for the structure
-            structure.calc = pilot_model
+        Returns
+        -------
+        list[Atoms]
+            List of randomly selected Atoms objects.
+        """
+        if self.random_seed is not None:
+            np.random.seed(self.random_seed)
+        
+        if len(atoms) < self.num_of_samples:
+            selected_atoms = atoms
+        else:
+            selected_idxs = np.random.choice(len(atoms), self.num_of_samples, replace=False)
+            selected_atoms = [atoms[i] for i in selected_idxs]
+
+        return selected_atoms
+
+    def uniform_selection(self, atoms) -> list[Atoms]:
+        """
+        Select structures uniformly from the provided structures.
+
+        Returns
+        -------
+        list[Atoms]
+            List of uniformly selected Atoms objects.
+        """
+        if len(atoms) < self.num_of_samples:
+            selected_atoms = atoms
+        else:
+            indices = np.linspace(0, len(atoms) - 1, self.num_of_samples, dtype=int)
+            selected_atoms = [atoms[idx] for idx in indices]
+
+        return selected_atoms
+
+    def descriptor_based_selection(self, atoms, descriptors=None, method=None) -> list[Atoms]:
+        """
+        Select structures using CUR (Curated Uncertainty Reduction) method.
+
+        Returns
+        -------
+        list[Atoms]
+            List of selected Atoms objects using CUR method.
+        """
+        #Check that number of samples is not greater than number of structures
+        if len(atoms) < self.num_of_samples:
+            print(f"Number structures to be selected ({self.num_of_samples}) exceeds number of available structures ({len(atoms)}): selecting all structures.")
+            return atoms
+
+        # Compute SOAP descriptor for the given structures
+        if descriptors is None:
+            descriptors = self._compute_soap_descriptors(atoms)
+
+        #Choose the selector based on the specified method
+        if method == "cur":
+            #CUR selector
+            selector = CUR(
+                n_to_select=self.num_of_samples,
+                random_state=self.random_seed,
+            )                    
+        
+        elif method == "fps":
+            #FPS selector
+            selector = FPS(
+                n_to_select=self.num_of_samples,
+                random_state=self.random_seed,
+                initialize='random'
+            )
+        
+        else:
+            raise ValueError(f"Invalid selection method: {method}. Please choose 'cur' or 'fps'.")
+
+        # Select structures
+        selector.fit(descriptors)
+        selected_atoms = [atoms[i] for i in selector.selected_idx_]
+
+        print("Descriptor-based selection:", method) ##DEBUG
+
+        return selected_atoms
+
+    def _compute_soap_descriptors(self, atoms):
+        """
+        Create SOAP descriptor for the provided structures.
+        """
+        #Get atomic species from structures
+        species = set()
+        for frame in atoms:
+            species.update(frame.get_chemical_symbols())
+
+        #Get parameters for soap descriptor
+        default_soap_params = {
+            "species": species,
+            "r_cut": 10.0,
+            "n_max": 12,
+            "l_max": 12,
+            "sigma": 1.0,
+            "periodic": True,
+            "average": "outer",
+        }
+        default_soap_params.update(self.soap_params)
+
+        # Create SOAP descriptor: with 'outer' average we create a single descriptor for each structure
+        soap = SOAP(**default_soap_params)
+
+        # Compute the descriptor for each structure dimensions = (n_frames, n_features)
+        descriptors = soap.create(atoms, n_jobs=-1) #Parallel computation of descriptors
+
+        return descriptors
+
+    def _boltzmann_selection(self, atoms):
+        """
+        Select structures using Boltzmann histogram in enthalpy, adapted from autoplex-rss.
+        """               
+        #Set random seed for reproducibility
+        if self.random_seed is not None:
+            np.random.seed(self.random_seed)
+
+        #Get parameters for boltzmann average
+        default_boltz_params = {
+            "kt": 0.3,
+            "boltz_frac": 0.8,
+            "bolt_max_num": 3000,
+        }
+        default_boltz_params.update(self.boltz_params)
+
+        # Get number of structures to select with boltzmann selection
+        select_num = round(default_boltz_params["boltz_frac"] * len(atoms))
+        select_num = select_num if select_num < default_boltz_params["bolt_max_num"] else default_boltz_params["bolt_max_num"]
+
+        #Formation energy calculation
+        #Get isolated atomic energies #eV
+        e0s = {int(k): float(v) for k, v in self.isolated_atom_energies.items()}    
+        #Compute FEs #eV
+        formation_energies = [frame.get_potential_energy() - sum(e0s[z] for z in frame.get_atomic_numbers()) for frame in atoms]
+
+        #Compute pressures #eV/Å³
+        pressures = [frame.get_stress(voigt=True)[:3].mean() for frame in atoms] 
+
+        #Compute enthalpies
+        enthalpies = [fe + frame.get_volume() * p for fe, frame, p in zip(formation_energies, atoms, pressures)]
+        enthalpies = np.array(enthalpies)
+        print("Enthalpies for Boltzmann selection:", enthalpies) ##DEBUG
+
+        #Compute frame's relative probabilities
+        min_H = np.min(enthalpies) # Most stable configuration
+        histo = np.histogram(enthalpies)
+        kt, config_prob = default_boltz_params["kt"], []
+        for H in enthalpies:
+            bin_i = np.searchsorted(histo[1][1:], H, side="right")
+            if bin_i == len(histo[1][1:]): #Greatest entalpy
+                bin_i = bin_i - 1
             
-            # Relax the structure
-            relaxation_dyn = BFGS(structure)
-            relaxation_dyn.run(fmax=0.01, steps=1000) # Convergence criteria
+            #Compute relative probability
+            p = 1.0 / histo[0][bin_i] if histo[0][bin_i] > 0.0 else 0.0
+            if kt > 0.0:
+                p *= np.exp(-(H - min_H) / kt)
+            config_prob.append(p)
+        config_prob = np.array(config_prob)
+        
+        #Perform Boltzmann sampling
+        selected_bolt_atoms = []
+        for _ in range(select_num):
+            # Compute probability distribution from relative probabilities
+            config_prob /= np.sum(config_prob)
+            # Compute cumulative probabilities
+            cumul_prob = np.cumsum(config_prob)
+            # Sample the cumulative probabilities
+            rv = np.random.uniform()
+            config_i = np.searchsorted(cumul_prob, rv)
+            selected_bolt_atoms.append(atoms[config_i])
+            # Remove the selected configuration from the lists
+            config_prob = np.delete(config_prob, config_i)
+            del atoms[config_i]
+            enthalpies = np.delete(enthalpies, config_i)
 
-            # Get the relaxed structure
-            relaxed_structure = structure.copy()
-            relaxed_structure.calc = None
-            relaxed_structures.append(relaxed_structure)
+        return selected_bolt_atoms
 
-            # Save the relaxed structure to a file
-            write(structure_fname, relaxed_structure, format="extxyz", write_info=True)
-
-        return relaxed_structures
-    
-    def evaluate_ensemble_deviation(
-            self,
-            structures: list[Atoms],
-            mlip_models: list[MACECalculator],
-            ):
+    def boltz_and_descriptor_selection(self, atoms, descriptors=None, descriptor_method=None):
         """
-        Function to evaluate the deviation of the ensemble of MLIP models.
+        Perform Boltzmann selection followed by descriptor-based selection.
         """
-        # Loop over structures
-        for structure in structures:
-            # Get the forces and energies from each model
-            forces = []
-            energies = []
-            for mlip_model in mlip_models:
-                structure.calc = mlip_model
-                forces.append(structure.get_forces())
-                energies.append(structure.get_potential_energy())
+        # First, perform Boltzmann selection
+        boltz_selected_atoms = self._boltzmann_selection(atoms=atoms)
 
-            # Calculate the deviation of the ensemble of models
-            forces = np.array(forces)
-            force_value = np.mean(forces, axis=0)
-            force_deviation = np.std(forces, axis=0)
+        # Then, perform descriptor-based selection on the Boltzmann selected atoms
+        selected_atoms = self.descriptor_based_selection(atoms=boltz_selected_atoms, descriptors=descriptors, method=descriptor_method)
 
-            energies = np.array(energies)
-            energy_value = np.mean(energies, axis=0)
-            energy_deviation = np.std(energies, axis=0)
-
-            # Store results and deviations in the structure
-            structure.calc = None
-            structure.arrays["force_value"] = force_value
-            structure.arrays["force_deviation"] = force_deviation
-            structure.info["energy_value"] = energy_value
-            structure.info["energy_deviation"] = energy_deviation
-
-        return structures
-
-    def sample_structures(
-            self,
-            structures: list[Atoms],
-            deviation_threshold: float = 0.1,
-            relative: float | None = None,
-            ):
-        """
-        Function to sample the structures based on the deviation of the ensemble of models.
-        """
-        # Loop over structures
-        sampled_structures = []
-        for structure in structures:
-            # Get force values and deviations
-            force_value = structure.arrays["force_value"]
-            force_deviation = structure.arrays["force_deviation"]
-
-            if relative is not None:
-                # Compute force relative deviation as metric
-                # Using relative as a filter parameter for small forces
-                deviation_metric = np.abs(force_value) / (np.abs(force_value) + relative)
-            else:
-                # Use absolute deviation as metric
-                deviation_metric = np.abs(force_deviation)
-
-            # Check if the maximum of deviation metric is above the threshold
-            if np.max(deviation_metric) > deviation_threshold:
-                sampled_structures.append(structure)
-
-        return sampled_structures
-
+        return selected_atoms
