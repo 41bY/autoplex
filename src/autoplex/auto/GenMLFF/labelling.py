@@ -688,7 +688,7 @@ class QEstaticLabelling(Maker):
             if 'nat =' in line: idx_nat_line = idx
             elif 'disk_io' in line: idx_diskio = idx
             elif 'outdir' in line: idx_outdir = idx
-            elif 'K_POINTS' in line: idx_kpoints_line = i
+            elif 'K_POINTS' in line: idx_kpoints_line = idx
         
         #Update number of atoms
         pwi_template[idx_nat_line] = f'nat = {nat}\n'
