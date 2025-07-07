@@ -6,7 +6,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 
 from jobflow import Flow, job
 from jobflow_remote import submit_flow, set_run_config
-from autoplex.auto.GenMLFF.phonon_stability import local_phonon_flow, compute_stability_metrics
+from autoplex.auto.GenMLFF.phonon_stability.phonon_stability import local_phonon_flow, compute_stability_metrics
 
 serial_gpu_resources = {
     "account": "IscrB_MLSilDia",
