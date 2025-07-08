@@ -4,10 +4,10 @@ from jobflow_remote import submit_flow, set_run_config
 from autoplex.auto.GenMLFF.phonon_stability.wrapper_phonon_stability import wrap_stability_flow
 
 serial_gpu_resources = {
-    "account": "IscrB_MLSilDia",
+    "account": "IscrB_DiaWear",
     "partition": "boost_usr_prod",
-    "qos": "boost_qos_dbg",
-    "time": "00:30:00",
+    # "qos": "boost_qos_dbg",
+    "time": "24:00:00",
     "nodes": 1,
     "ntasks_per_node": 1,
     "cpus_per_task": 8,
@@ -128,10 +128,13 @@ flow = wrap_stability_flow(
     max_parallel_flows=max_parallel_flows,
     compute_metrics=compute_metrics
     )
+flow.name = f"ph_stability_{model_name}_{data_name}"
 
 #Proper configuration of the flow
+# workers: meta_worker, mattersim_worker, mace_worker
+# exec_config: meta_config, matgen_config, _
 flow = set_run_config(
-    flow, name_filter=f"phonons_", resources=serial_gpu_resources, worker="schedule_worker", #exec_config="meta_config"
+    flow, name_filter=f"phonons_", resources=serial_gpu_resources, worker="mattersim_worker", exec_config="matgen_config"
 )
 flow = set_run_config(
     flow, name_filter="stability_metrics", exec_config="dump_config"
