@@ -1,12 +1,7 @@
+import json
 import argparse
-import numpy as np
-
-from ase.io import read
-from pymatgen.io.ase import AseAtomsAdaptor
-
-from jobflow import Flow, job
 from jobflow_remote import submit_flow, set_run_config
-from autoplex.auto.GenMLFF.phonon_stability.phonon_stability import local_phonon_flow, compute_stability_metrics
+from autoplex.auto.GenMLFF.phonon_stability.wrapper_phonon_stability import wrap_stability_flow
 
 serial_gpu_resources = {
     "account": "IscrB_MLSilDia",
@@ -39,109 +34,8 @@ serial_cpu_resources = {
 }
 
 
-def stability_flow(
-        data_path, 
-        model_path, 
-        model_name="MatterSim",
-        data_name="data", 
-        max_parallel_flows=None,
-        compute_metrics=False,
-        ):
-    #Read the structures from the file
-    structures = read(data_path, index=":")
-
-    #Define phonon maker kwargs
-    ph_maker_kwargs = {
-        "min_length": 3.0,
-        "use_symmetrized_structure": "conventional",
-        "create_thermal_displacements": False,
-        "store_force_constants": False,
-        "prefer_90_degrees": False,
-        "generate_frequencies_eigenvectors_kwargs": {"tstep": 100},
-    }
-
-    #Define static maker kwargs
-    st_maker_kwargs = {
-        "force_field_name": f"MLFF.{model_name}", # MLFF.MACE, MLFF.MatterSim, MLFF.META_eqv2
-        # "calculator_kwargs": {"model": model_path, "device" : "cuda"} #MACE    
-        # "calculator_kwargs": {"load_path": model_path, "device" : "cuda"} #MatterSim        
-        "calculator_kwargs": {"checkpoint_path": model_path, "cpu": False, "seed": 42}, #META_eqv2
-    }
-
-    #Define relax maker kwargs
-    relax_maker_kwargs = {
-        "force_field_name": f"MLFF.{model_name}",
-        "calculator_kwargs": {"checkpoint_path": model_path, "cpu": False, "seed": 42}         
-    }
-
-    #Define joblist
-    joblist, output = [], []
-
-    #Assign a unique id to each structure
-    structures_idxs = [idx for idx, _ in enumerate(structures)]
-
-    #Divide the list of structures and idxs in batches if max_parallel_flows is set
-    if max_parallel_flows is not None:
-        #Get batch size
-        batch_size = max(1, len(structures) // max_parallel_flows)
-        num_batches = len(structures)//batch_size if len(structures) % batch_size == 0 else len(structures)//batch_size + 1
-    else: 
-        batch_size, num_batches = 1, len(structures)
-
-    #Create batches of structures and idxs
-    # (num_batches - 1) batches of size batch_size and one last batch with the remaining structures
-    structure_batches = [
-        structures[i * batch_size: (i + 1) * batch_size] for i in range(num_batches - 1)
-    ] + [structures[(num_batches - 1) * batch_size:]]
-    idxs_batches = [
-        structures_idxs[i * batch_size: (i + 1) * batch_size] for i in range(num_batches - 1)
-    ] + [structures_idxs[(num_batches - 1) * batch_size:]]        
-
-    # Define one serial_phononflow job for each structure batch
-    for structures, idxs in zip(structure_batches, idxs_batches):
-        # Convert ASE Atoms objects to Pymatgen Structures
-        pmg_structures = [AseAtomsAdaptor.get_structure(structure) for structure in structures]
-
-        # Create a serial_phonon flow for that batch of structures
-        serial_ph = local_phonon_flow(
-            ph_makers_kwargs=ph_maker_kwargs, 
-            st_makers_kwargs=st_maker_kwargs,
-            relax_makers_kwargs=relax_maker_kwargs,
-            pmg_structures=pmg_structures,
-            idxs_structures=idxs,
-            output_dir=f"results_{model_name}_{data_name}",  # Directory to store the results
-        )
-        if len(idxs) == 1:
-            serial_ph.name = f"phonons_{model_name}_{data_name}_{idxs[0]}"
-        else:
-            serial_ph.name = f"phonons_{model_name}_{data_name}_{idxs[0]}-{idxs[-1]}"
-
-        #Populate the joblist and output
-        joblist.append(serial_ph), output.append(serial_ph.output) #output is a list (batches) of list (batched_structures) of dict (result)
-    #Assemble the phonons flow
-    phonons_flow = Flow(joblist, output, name=f"ph_{model_name}_{data_name}_stability")
-    
-    if compute_metrics:
-        #Compute dynamic stability metric for each structure
-        metric_job = compute_stability_metrics(phonons_flow.output, neg_modes_threshold=0.01)
-        metric_job.name = "stability_metrics_job"
-
-        #Assemble the stability flow
-        final_flow = Flow([phonons_flow, metric_job], metric_job.output, name=f"ph_{model_name}_{data_name}_stability")
-    else:
-        final_flow = phonons_flow
-
-    return final_flow
-
-
 parser = argparse.ArgumentParser(
     description="Submit a workflow to calculate phonon properties using Atomate2."
-)
-parser.add_argument(
-    "--structures_file",
-    type=str,
-    required=True,
-    help="Path to ASE-readable structures file",
 )
 parser.add_argument(
     "--MLIP_path",
@@ -156,10 +50,31 @@ parser.add_argument(
     help="Name defining the MLIP model to use for the phonon calculations performed by atomate2.",
 )
 parser.add_argument(
+    "--MLIP_kwargs",
+    type=json.loads,
+    required=True,
+    help="JSON string with model calculator kwargs to use for the phonon calculations.",
+)
+# "calculator_kwargs": {"model": model_path, "device" : "cuda"} #MACE    
+# "calculator_kwargs": {"load_path": model_path, "device" : "cuda"} #MatterSim        
+# "calculator_kwargs": {"checkpoint_path": model_path, "cpu": False, "seed": 42}, #META_eqv2
+parser.add_argument(
+    "--data_file",
+    type=str,
+    required=True,
+    help="Path to ASE-readable structures file",
+)
+parser.add_argument(
     "--data_name",
     type=str,
     default="data",
     help="Name to use for the data in the flow. This will be used to name the jobs.",
+)
+parser.add_argument(
+    "--phonon_maker_kwargs",
+    type=json.loads,
+    default={},
+    help="JSON string with kwargs to use for the phonon flow maker. If not provided, default values will be used.",
 )
 parser.add_argument(
     "--max_parallel_flows",
@@ -176,26 +91,47 @@ parser.add_argument(
 
 #Parse the arguments
 args = parser.parse_args()
-structure_path = args.structures_file
+
+#Model parameters
 model_path = args.MLIP_path
 model_name = args.MLIP_name
+model_kwargs = args.MLIP_kwargs
+
+#Data parameters
+data_file = args.data_file
 data_name = args.data_name
+
+#Phonon parameters
+phonon_kwargs = {
+            "min_length": 3.0,
+            "use_symmetrized_structure": "conventional",
+            "create_thermal_displacements": False,
+            "store_force_constants": False,
+            "prefer_90_degrees": False,
+            "generate_frequencies_eigenvectors_kwargs": {"tstep": 100},
+        }
+if args.phonon_maker_kwargs:
+    phonon_kwargs.update(args.phonon_maker_kwargs)
+
+#Flow parameters
 max_parallel_flows = args.max_parallel_flows
 compute_metrics = args.compute_metrics
 
 #Assemble the stability flow
-flow = stability_flow(
-    data_path=structure_path, 
+flow = wrap_stability_flow(
     model_path=model_path, 
     model_name=model_name,
-    data_name=data_name,
+    model_kwargs=model_kwargs,
+    phonon_kwargs=phonon_kwargs,
+    data_path=data_file, 
+    data_name=data_name, 
     max_parallel_flows=max_parallel_flows,
-    compute_metrics=compute_metrics,
+    compute_metrics=compute_metrics
     )
 
 #Proper configuration of the flow
 flow = set_run_config(
-    flow, name_filter=f"phonons_", resources=serial_gpu_resources, worker="meta_worker", exec_config="dump_config"
+    flow, name_filter=f"phonons_", resources=serial_gpu_resources, worker="schedule_worker", #exec_config="meta_config"
 )
 flow = set_run_config(
     flow, name_filter="stability_metrics", exec_config="dump_config"
