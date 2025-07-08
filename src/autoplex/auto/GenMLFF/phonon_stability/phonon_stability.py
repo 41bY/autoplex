@@ -1,4 +1,5 @@
 import os
+import json
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -259,7 +260,7 @@ class StabilityPhononFlowMaker(Maker):
                 stability_output_dir = f"{output_dir}/structure{idx_structure}/"
                 self._dump_stability_output(
                     output_path=stability_output_dir,
-                    # stability_output=stability_output,
+                    stability_output=stability_output,
                     save_bandstructure=True,  # Set to True to save phonon bandstructure
                     )
             
@@ -349,11 +350,15 @@ class StabilityPhononFlowMaker(Maker):
 
     def _dump_stability_output(self,
         output_path : str,
+        stability_output : dict,
         save_bandstructure : bool = False,
         ):
         """
-        Move the output files from the current directory to the specified output directory.
-        If save_bandstructure is True, the phonon bandstructure will be moved as well.
+        Dump the stability output to a JSON file in the specified output directory.
+        Parameters:
+            output_path (str): Path to the output directory where the stability output will be saved.
+            stability_output (dict): Dictionary containing the stability output data.
+            save_bandstructure (bool): Whether to save the phonon bandstructure to a file.
         """
         #Ensure the output directory exists
         os.makedirs(output_path, exist_ok=True)
@@ -361,12 +366,41 @@ class StabilityPhononFlowMaker(Maker):
         #Get working directory
         cwd = os.getcwd()
 
-        #Move phonopy.yaml file
-        os.rename(f"{cwd}/phonopy.yaml", f"{output_path}/phonopy.yaml")
+        #Get structure, dos and bandstructure if true
+        structure = stability_output.get("relaxed_structure", None)
+        phonon_dos = stability_output.get("phonon_dos", None)
+        phonon_bs = stability_output.get("phonon_bandstructure", None) if save_bandstructure else None
 
-        #Move phonon DOS file
-        os.rename(f"{cwd}/phonon_dos.yaml", f"{output_path}/phonon_dos.yaml")
+        #Write the relaxed structure to a file
+        if structure is not None:
+            #Get fname
+            structure_fname = f"{output_path}/relaxed_structure.json"
 
-        #Move phonon bandstructure file if requested
-        if save_bandstructure:
-            os.rename(f"{cwd}/phonon_band_structure.yaml", f"{output_path}/phonon_band_structure.yaml")
+            #Serialze structure to JSON
+            json_structure = structure.to_json()
+
+            #Dump the structure to a file
+            with open(structure_fname, "w") as f:
+                json.dump(json_structure, f)
+        
+        #Write the phonon DOS to a file
+        if phonon_dos is not None:
+            #Get fname
+            phonon_dos_fname = f"{output_path}/phonon_dos.json"
+
+            #Serialize the phonon DOS to a dictionary
+            json_pdos = phonon_dos.to_json()
+            
+            with open(phonon_dos_fname, "w") as f:
+                json.dump(json_pdos, f)
+        
+        #Write the phonon bandstructure to a file
+        if phonon_bs is not None:
+            #Get fname
+            phonon_bs_fname = f"{output_path}/phonon_bandstructure.json"
+
+            #Serialize the phonon bandstructure to a dictionary
+            json_pbs = phonon_bs.to_json()
+            
+            with open(phonon_bs_fname, "w") as f:
+                json.dump(json_pbs, f)
