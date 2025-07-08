@@ -555,19 +555,21 @@ class QEstaticLabelling(Maker):
             return Response(replace=None, output=[])
 
         # Check pwi template
-        pwi_template_lines = self.check_pwi_template(self.fname_pwi_template)
+        pwi_reference_lines = self.check_pwi_template(self.fname_pwi_template)
 
         # Write pwi input files for each structure
         work_dir = os.getcwd()
         path_to_qe_workdir = os.path.join(work_dir, "scf_files")
         os.makedirs(path_to_qe_workdir, exist_ok=True)
-
         for i, structure in enumerate(structures):
+            #Get fname of the next pwi file
             fname_new_pwi = os.path.join(path_to_qe_workdir, f"structure_{i}.pwi")
+
+            #Write pwi file for the structure
             self.write_pwi(
                 fname_pwi_output=fname_new_pwi,
                 structure=structure, 
-                pwi_template=pwi_template_lines, 
+                pwi_reference=pwi_reference_lines, 
                 )
 
         # Set number of QE workers
@@ -677,11 +679,14 @@ class QEstaticLabelling(Maker):
             self, 
             fname_pwi_output: str,
             structure: Atoms, 
-            pwi_template: list[str],
+            pwi_reference: list[str],
             ):
         """
         Write the pwi input file for the given structure.
         """
+        #Duplicate the pwi template to avoid overwriting the reference lines
+        pwi_template = pwi_reference.copy()
+
         # Check pwi lines
         idx_diskio, idx_outdir, idx_nat_line, idx_kpoints_line, nat = 0, 0, 0, 0, len(structure)
         for idx, line in enumerate(pwi_template):
@@ -706,7 +711,7 @@ class QEstaticLabelling(Maker):
             if idx_outdir == 0:
                 pwi_template.insert(idx_diskio + 1, f"outdir = 'OUT'\n")
 
-        kpoints_lines = self.set_Kpoints(
+        kpoints_lines = self._set_Kpoints(
             tmp_pwi_lines=pwi_template, 
             idx_kpoints_line=idx_kpoints_line, 
             atoms=structure,
@@ -734,7 +739,7 @@ class QEstaticLabelling(Maker):
             for line in pos_lines: #Write positions lines
                 f.write(line)
 
-    def set_Kpoints(self,
+    def _set_Kpoints(self,
             tmp_pwi_lines: list[str],
             idx_kpoints_line: int,
             atoms: Atoms,
