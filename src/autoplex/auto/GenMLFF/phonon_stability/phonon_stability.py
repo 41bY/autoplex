@@ -195,6 +195,34 @@ class StabilityPhononFlowMaker(Maker):
             idxs_structures, pmg_structures, ph_makers_kwargs, st_makers_kwargs, relax_makers_kwargs
             ):
 
+            #Check if the structure has already been computed
+            if output_dir is not None:
+                #Get output directory
+                stability_output_dir = f"{output_dir}/structure{idx_structure}/"
+                
+                #Get the structure and phonon DOS file names
+                structure_fname = f"{stability_output_dir}/relaxed_structure.json"      
+                phonon_dos_fname = f"{stability_output_dir}/phonon_dos.json"
+
+                #Check if the structure has already been computed
+                if os.path.exists(structure_fname) and os.path.exists(phonon_dos_fname):
+                    #Inform user that the structure has already been computed
+                    print(f"Structure {idx_structure} already computed.")
+                    print("Reconstrucing output from existing files and skip to next structure.")
+
+                    #Reconstruct the stability output from the existing files
+                    stability_output = self.output_from_files(
+                        structure_fname=structure_fname,
+                        pdos_fname=phonon_dos_fname,
+                        index_structure=idx_structure,
+                        )
+          
+                    #Append the stability output to the list
+                    stability_outputs.append(stability_output)
+
+                    #Skip to the next structure
+                    continue
+
             #Create a ForceFieldStaticMaker instance
             static_maker = ForceFieldStaticMaker(**st_maker_kwargs)
         
@@ -335,11 +363,27 @@ class StabilityPhononFlowMaker(Maker):
         #Get frequencies and densities
         frequencies, densities = phonon_dos.frequencies, phonon_dos.densities
 
-        #Integrate positive and negative densities
-        number_positive_modes = simpson(y=densities[frequencies > 0], x=frequencies[frequencies > 0])
-        number_positive_modes = abs(number_positive_modes)
-        number_negative_modes = simpson(y=densities[frequencies < 0], x=frequencies[frequencies < 0])
-        number_negative_modes = abs(number_negative_modes)
+        #Check frequency range
+        neg_freqs, pos_freqs = frequencies[frequencies < 0], frequencies[frequencies > 0]
+        neg_densities, pos_densities = densities[frequencies < 0], densities[frequencies > 0]
+
+        #Integrate positive densities
+        if pos_freqs.size > 0:
+            number_positive_modes = simpson(y=densities[frequencies > 0], x=frequencies[frequencies > 0])
+            number_positive_modes = abs(number_positive_modes)
+        else:
+            print(f"Error: No positive frequencies found in the phonon DOS")
+            return -1, -1
+        
+        #Integrate negative densities
+        if neg_freqs.size > 0:        
+            number_negative_modes = simpson(y=densities[frequencies < 0], x=frequencies[frequencies < 0])
+            number_negative_modes = abs(number_negative_modes)
+        else:
+            print(f"No negative frequencies found in the phonon DOS")
+            return 1, 0 #All modes are positive, so ratio is 1 and negative modes is 0
+        
+        #Integrate total density
         total_number_modes = simpson(y=densities, x=frequencies)
 
         #Compute ratio of modes
@@ -404,3 +448,34 @@ class StabilityPhononFlowMaker(Maker):
             
             with open(phonon_bs_fname, "w") as f:
                 json.dump(json_pbs, f)
+
+    def output_from_files(self,
+        structure_fname : str,
+        pdos_fname : str,
+        index_structure : int,
+        ):
+
+        
+        #Load structure from the file
+        with open(structure_fname, "r") as f:
+            str_json_structure = json.load(f)
+        json_structure = json.loads(str_json_structure)
+        relaxed_structure = Structure.from_dict(json_structure)
+
+        #Load phonon DOS from the file
+        with open(pdos_fname, "r") as f:
+            str_json_pdos = json.load(f)
+        json_pdos = json.loads(str_json_pdos)
+        pdos = PhononDos.from_dict(json_pdos)
+
+        #Compute pmodes ratio
+        pos_modes, neg_modes = self._compute_dynamic_stability(pdos)
+
+        #Create stability output
+        stability_output = {
+            "structure_index": index_structure,
+            "relaxed_structure": relaxed_structure,
+            "pmodes_ratio": (pos_modes, neg_modes),
+        }        
+
+        return stability_output
